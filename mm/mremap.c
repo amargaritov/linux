@@ -24,6 +24,7 @@
 #include <linux/uaccess.h>
 #include <linux/mm-arch-hooks.h>
 #include <linux/userfaultfd_k.h>
+#include <linux/khugepaged.h>
 
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
@@ -294,6 +295,8 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	if (!new_vma)
 		return -ENOMEM;
 
+	thp_reservations_mremap(vma, old_addr, new_vma, new_addr, old_len,
+				need_rmap_locks);
 	moved_len = move_page_tables(vma, old_addr, new_vma, new_addr, old_len,
 				     need_rmap_locks);
 	if (moved_len < old_len) {
@@ -308,6 +311,8 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 		 * which will succeed since page tables still there,
 		 * and then proceed to unmap new area instead of old.
 		 */
+		thp_reservations_mremap(new_vma, new_addr, vma, old_addr,
+					moved_len, true);
 		move_page_tables(new_vma, new_addr, vma, old_addr, moved_len,
 				 true);
 		vma = new_vma;

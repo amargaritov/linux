@@ -182,6 +182,7 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 	if (vma->vm_file)
 		fput(vma->vm_file);
 	mpol_put(vma_policy(vma));
+	thp_resvs_put(vma_thp_reservations(vma));
 	vm_area_free(vma);
 	return next;
 }
@@ -839,6 +840,7 @@ again:
 	if (adjust_next) {
 		next->vm_start += adjust_next << PAGE_SHIFT;
 		next->vm_pgoff += adjust_next;
+		_khugepaged_move_reservations_adj(vma, next, adjust_next);
 	}
 
 	if (root) {
@@ -849,6 +851,8 @@ again:
 	}
 
 	if (remove_next) {
+		_khugepaged_reservations_fixup(next, vma);
+
 		/*
 		 * vma_merge has merged next into vma, and needs
 		 * us to remove next before dropping the locks.
@@ -875,6 +879,8 @@ again:
 		 * (it may either follow vma or precede it).
 		 */
 		__insert_vm_struct(mm, insert);
+
+		_khugepaged_reservations_fixup(vma, insert);
 	} else {
 		if (start_changed)
 			vma_gap_update(vma);
@@ -1780,6 +1786,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 			goto free_vma;
 	} else {
 		vma_set_anonymous(vma);
+		thp_resvs_new(vma);
 	}
 
 	vma_link(mm, vma, prev, rb_link, rb_parent);
@@ -2640,6 +2647,9 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (err)
 		goto out_free_mpol;
 
+	if (vma_thp_reservations(vma))
+		thp_resvs_new(new);
+
 	if (new->vm_file)
 		get_file(new->vm_file);
 
@@ -2657,6 +2667,7 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 		return 0;
 
 	/* Clean everything up if vma_adjust failed. */
+	thp_resvs_put(vma_thp_reservations(new));
 	if (new->vm_ops && new->vm_ops->close)
 		new->vm_ops->close(new);
 	if (new->vm_file)
@@ -2992,6 +3003,7 @@ static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long fla
 	vma->vm_pgoff = pgoff;
 	vma->vm_flags = flags;
 	vma->vm_page_prot = vm_get_page_prot(flags);
+	thp_resvs_new(vma);
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 out:
 	perf_event_mmap(vma);
@@ -3205,6 +3217,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 			goto out_free_vma;
 		if (anon_vma_clone(new_vma, vma))
 			goto out_free_mempol;
+		if (vma_thp_reservations(vma))
+			thp_resvs_new(new_vma);
 		if (new_vma->vm_file)
 			get_file(new_vma->vm_file);
 		if (new_vma->vm_ops && new_vma->vm_ops->open)

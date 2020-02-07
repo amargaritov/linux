@@ -92,6 +92,7 @@ extern struct kobj_attribute shmem_enabled_attr;
 extern bool is_vma_temporary_stack(struct vm_area_struct *vma);
 
 extern unsigned long transparent_hugepage_flags;
+extern unsigned int hugepage_promotion_threshold;
 
 static inline bool transparent_hugepage_enabled(struct vm_area_struct *vma)
 {

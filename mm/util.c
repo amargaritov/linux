@@ -689,6 +689,11 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 			NR_INDIRECTLY_RECLAIMABLE_BYTES) >> PAGE_SHIFT;
 
 		/*
+		 * Unused small pages in THP reservations
+		 */
+		free += global_node_page_state(NR_THP_RESERVED);
+
+		/*
 		 * Leave reserved pages. The pages are not for anonymous pages.
 		 */
 		if (free <= totalreserve_pages)

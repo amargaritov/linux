@@ -787,6 +787,7 @@ static inline void memcg_memory_event_mm(struct mm_struct *mm,
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+void mem_cgroup_collapse_huge_fixup(struct page *head);
 void mem_cgroup_split_huge_fixup(struct page *head);
 #endif
 
@@ -1085,6 +1086,10 @@ unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 					    unsigned long *total_scanned)
 {
 	return 0;
+}
+
+static inline void mem_cgroup_collapse_huge_fixup(struct page *head)
+{
 }
 
 static inline void mem_cgroup_split_huge_fixup(struct page *head)

@@ -4740,6 +4740,11 @@ long si_mem_available(void)
 	available += global_node_page_state(NR_INDIRECTLY_RECLAIMABLE_BYTES) >>
 		PAGE_SHIFT;
 
+	/*
+	 * Unused small pages in THP reservations
+	 */
+	available += global_node_page_state(NR_THP_RESERVED);
+
 	if (available < 0)
 		available = 0;
 	return available;

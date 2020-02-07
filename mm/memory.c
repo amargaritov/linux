@@ -51,6 +51,7 @@
 #include <linux/pagemap.h>
 #include <linux/memremap.h>
 #include <linux/ksm.h>
+#include <linux/khugepaged.h>
 #include <linux/rmap.h>
 #include <linux/export.h>
 #include <linux/delayacct.h>
@@ -1438,6 +1439,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 		if (pmd_none_or_trans_huge_or_clear_bad(pmd))
 			goto next;
 		next = zap_pte_range(tlb, vma, pmd, addr, next, details);
+		khugepaged_release_reservation(vma, addr);
 next:
 		cond_resched();
 	} while (pmd++, addr = next, addr != end);
@@ -2494,16 +2496,29 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	const unsigned long mmun_start = vmf->address & PAGE_MASK;
 	const unsigned long mmun_end = mmun_start + PAGE_SIZE;
 	struct mem_cgroup *memcg;
+	bool pg_from_reservation = false;
 
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
-		new_page = alloc_zeroed_user_highpage_movable(vma,
+		new_page = khugepaged_get_reserved_page(vma, vmf->address);
+		if (!new_page) {
+			new_page = alloc_zeroed_user_highpage_movable(vma,
 							      vmf->address);
+		} else {
+		      clear_user_highpage(new_page, vmf->address);
+		      pg_from_reservation = true;
+		}
+
 		if (!new_page)
 			goto oom;
 	} else {
+		/*
+		 * XXX If there's a THP reservation, for now just
+		 * release it since they're not shared on fork.
+		 */
+		khugepaged_release_reservation(vma, vmf->address);
 		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
 				vmf->address);
 		if (!new_page)
@@ -2578,6 +2593,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			page_remove_rmap(old_page, false);
 		}
 
+		if (pg_from_reservation)
+			khugepaged_mod_resv_unused(vma, vmf->address, -1);
+
 		/* Free the old page.. */
 		new_page = old_page;
 		page_copied = 1;
@@ -2609,7 +2627,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	}
 	return page_copied ? VM_FAULT_WRITE : 0;
 oom_free_new:
-	put_page(new_page);
+	if (!pg_from_reservation) {
+		put_page(new_page);
+	}
 oom:
 	if (old_page)
 		put_page(old_page);
@@ -3124,6 +3144,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	struct page *page;
 	vm_fault_t ret = 0;
 	pte_t entry;
+	bool pg_from_reservation = false;
 
 	/* File mapping without ->vm_ops ? */
 	if (vma->vm_flags & VM_SHARED)
@@ -3169,9 +3190,25 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	/* Allocate our own private page. */
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
-	page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
-	if (!page)
-		goto oom;
+
+	page = khugepaged_get_reserved_page(vma, vmf->address);
+	if (!page) {
+		// Try to reserve pages
+		khugepaged_reserve(vma, vmf->address); //Artemiy changed
+		page = khugepaged_get_reserved_page(vma, vmf->address);
+		if (!page) {
+			// Allocate one page
+			page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+			if (!page)
+				goto oom;
+		} else { // if found a previously reserved page
+			clear_user_highpage(page, vmf->address);
+			pg_from_reservation = true;
+		}
+	} else { // if found a previously reserved page
+		clear_user_highpage(page, vmf->address);
+		pg_from_reservation = true;
+	}
 
 	if (mem_cgroup_try_charge_delay(page, vma->vm_mm, GFP_KERNEL, &memcg,
 					false))
@@ -3205,6 +3242,10 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		return handle_userfault(vmf, VM_UFFD_MISSING);
 	}
 
+	if (pg_from_reservation)
+		// Decrement the number of unused pages in the reservation
+		khugepaged_mod_resv_unused(vma, vmf->address, -1);
+
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 	page_add_new_anon_rmap(page, vma, vmf->address, false);
 	mem_cgroup_commit_charge(page, memcg, false, false);
@@ -3219,10 +3260,14 @@ unlock:
 	return ret;
 release:
 	mem_cgroup_cancel_charge(page, memcg, false);
-	put_page(page);
+	if (!pg_from_reservation) { //Artemiy changed
+		put_page(page);
+	}
 	goto unlock;
 oom_free_page:
-	put_page(page);
+	if (!pg_from_reservation) { //Artemiy changed
+		put_page(page);
+	}
 oom:
 	return VM_FAULT_OOM;
 }
