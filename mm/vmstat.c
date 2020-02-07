@@ -1162,6 +1162,7 @@ const char * const vmstat_text[] = {
 	"nr_dirtied",
 	"nr_written",
 	"", /* nr_indirectly_reclaimable */
+	"nr_thp_reserved",
 
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
@@ -1263,6 +1264,8 @@ const char * const vmstat_text[] = {
 	"thp_zero_page_alloc_failed",
 	"thp_swpout",
 	"thp_swpout_fallback",
+	"thp_res_alloc",
+	"thp_res_alloc_failed",
 #endif
 #ifdef CONFIG_MEMORY_BALLOON
 	"balloon_inflate",

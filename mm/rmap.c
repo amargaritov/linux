@@ -65,6 +65,7 @@
 #include <linux/page_idle.h>
 #include <linux/memremap.h>
 #include <linux/userfaultfd_k.h>
+#include <linux/khugepaged.h>
 
 #include <asm/tlbflush.h>
 
@@ -1646,6 +1647,8 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			dec_mm_counter(mm, mm_counter_file(page));
 		}
 discard:
+		khugepaged_release_reservation(vma, address);
+
 		/*
 		 * No need to call mmu_notifier_invalidate_range() it has be
 		 * done above for all cases requiring it to happen under page

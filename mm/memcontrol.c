@@ -2662,6 +2662,39 @@ void memcg_kmem_uncharge(struct page *page, int order)
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 
 /*
+ * Fix up the mem_cgroup field of the head and tail pages of a compound
+ * page that has been converted from a reservation into a huge page.
+ */
+void mem_cgroup_collapse_huge_fixup(struct page *head)
+{
+	int i;
+
+	if (mem_cgroup_disabled())
+		return;
+
+	/*
+	 * Some pages may already have mem_cgroup == NULL if only some of
+	 * the pages in the reservation were faulted in when it was converted.
+	 */
+	for (i = 0; i < HPAGE_PMD_NR; i++) {
+		if (head[i].mem_cgroup != NULL) {
+			if (i != 0)
+				head->mem_cgroup = head[i].mem_cgroup;
+			else
+				i++;
+			break;
+		}
+	}
+	for (; i < HPAGE_PMD_NR; i++)
+		head[i].mem_cgroup = NULL;
+
+	if (WARN_ON(head->mem_cgroup == NULL))
+		return;
+
+	__mod_memcg_state(head->mem_cgroup, MEMCG_RSS_HUGE, HPAGE_PMD_NR);
+}
+
+/*
  * Because tail pages are not marked as "used", set it. We're under
  * zone_lru_lock and migration entries setup in all page mappings.
  */

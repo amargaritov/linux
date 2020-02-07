@@ -8,6 +8,7 @@
 #include <linux/mmu_notifier.h>
 #include <linux/rmap.h>
 #include <linux/swap.h>
+#include <linux/shrinker.h>
 #include <linux/mm_inline.h>
 #include <linux/kthread.h>
 #include <linux/khugepaged.h>
@@ -56,6 +57,7 @@ enum scan_result {
 /* default scan 8*512 pte (or vmas) every 30 second */
 static unsigned int khugepaged_pages_to_scan __read_mostly;
 static unsigned int khugepaged_pages_collapsed;
+static unsigned int khugepaged_res_pages_collapsed;
 static unsigned int khugepaged_full_scans;
 static unsigned int khugepaged_scan_sleep_millisecs __read_mostly = 10000;
 /* during fragmentation poll the hugepage allocator once every minute */
@@ -75,6 +77,445 @@ static unsigned int khugepaged_max_ptes_swap __read_mostly;
 static __read_mostly DEFINE_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
 
 static struct kmem_cache *mm_slot_cache __read_mostly;
+
+struct list_lru thp_reservations_lru;
+
+void thp_resvs_new(struct vm_area_struct *vma)
+{
+	struct thp_resvs *new = NULL;
+
+	if (hugepage_promotion_threshold == 1)
+		goto done;
+
+	new = kzalloc(sizeof(struct thp_resvs), GFP_KERNEL);
+	if (!new)
+		goto done;
+
+	atomic_set(&new->refcnt, 1);
+	spin_lock_init(&new->res_hash_lock);
+	hash_init(new->res_hash);
+
+done:
+	vma->thp_reservations = new;
+}
+
+void __thp_resvs_put(struct thp_resvs *resv)
+{
+	if (!atomic_dec_and_test(&resv->refcnt))
+		return;
+
+	kfree(resv);
+}
+
+static struct thp_reservation *khugepaged_find_reservation(
+	struct vm_area_struct *vma,
+	unsigned long address)
+{
+	unsigned long haddr = address & HPAGE_PMD_MASK;
+	struct thp_reservation *res = NULL;
+
+	if (!vma->thp_reservations)
+		return NULL;
+
+	hash_for_each_possible(vma->thp_reservations->res_hash, res, node, haddr) {
+		if (res->haddr == haddr)
+			break;
+	}
+	return res;
+}
+
+static void khugepaged_free_reservation(struct thp_reservation *res)
+{
+	struct page *page;
+	int unused;
+	int i;
+
+	list_lru_del(&thp_reservations_lru, &res->lru);
+	hash_del(&res->node);
+	page = res->page;
+	unused = res->nr_unused;
+
+	kfree(res);
+
+	if (!PageCompound(page)) {
+		for (i = 0; i < HPAGE_PMD_NR; i++)
+			put_page(page + i);
+
+		if (unused) {
+			mod_node_page_state(page_pgdat(page), NR_THP_RESERVED,
+					    -unused);
+		}
+	}
+}
+
+void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
+{
+	unsigned long haddr = address & HPAGE_PMD_MASK;
+	struct thp_reservation *res;
+	struct page *page;
+	gfp_t gfp;
+	int i;
+
+	if (!vma->thp_reservations)
+		return;
+	if (!vma_is_anonymous(vma))
+		return;
+	if (haddr < vma->vm_start || haddr + HPAGE_PMD_SIZE > vma->vm_end)
+		return;
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+	if (khugepaged_find_reservation(vma, address)) {
+		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+	}
+
+	/*
+	 * Allocate the equivalent of a huge page but not as a compound page
+	 */
+	gfp = GFP_TRANSHUGE_LIGHT & ~__GFP_COMP;
+	page = alloc_hugepage_vma(gfp, vma, haddr, HPAGE_PMD_ORDER);
+	if (unlikely(!page)) {
+		count_vm_event(THP_RES_ALLOC_FAILED);
+		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+	}
+
+	for (i = 0; i < HPAGE_PMD_NR; i++)
+		set_page_count(page + i, 1);
+
+	res = kzalloc(sizeof(*res), GFP_KERNEL);
+	if (!res) {
+		count_vm_event(THP_RES_ALLOC_FAILED);
+		__free_pages(page, HPAGE_PMD_ORDER);
+		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+	}
+
+	count_vm_event(THP_RES_ALLOC);
+
+	res->haddr = haddr;
+	res->page = page;
+	res->vma = vma;
+	res->lock = &vma->thp_reservations->res_hash_lock;
+	hash_add(vma->thp_reservations->res_hash, &res->node, haddr);
+
+	INIT_LIST_HEAD(&res->lru);
+	list_lru_add(&thp_reservations_lru, &res->lru);
+
+	res->nr_unused = HPAGE_PMD_NR;
+	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, HPAGE_PMD_NR);
+
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+
+	khugepaged_enter(vma, vma->vm_flags);
+}
+
+struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
+					  unsigned long address)
+{
+	struct thp_reservation *res;
+	struct page *page;
+
+	if (!transparent_hugepage_enabled(vma))
+		return NULL;
+	if (!vma->thp_reservations)
+		return NULL;
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+	page = NULL;
+	res = khugepaged_find_reservation(vma, address);
+	if (res) {
+		unsigned long offset = address & ~HPAGE_PMD_MASK;
+
+		page = res->page + (offset >> PAGE_SHIFT);
+		get_page(page);
+
+		list_lru_del(&thp_reservations_lru, &res->lru);
+		list_lru_add(&thp_reservations_lru, &res->lru);
+
+		dec_node_page_state(res->page, NR_THP_RESERVED);
+	}
+
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+
+	return page;
+}
+
+void khugepaged_release_reservation(struct vm_area_struct *vma,
+				    unsigned long address)
+{
+	struct thp_reservation *res;
+
+	if (!vma->thp_reservations)
+		return;
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+	res = khugepaged_find_reservation(vma, address);
+	if (!res)
+		goto out;
+
+	khugepaged_free_reservation(res);
+
+out:
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+}
+
+/*
+ * Release all reservations covering a range in a VMA.
+ */
+void __khugepaged_release_reservations(struct vm_area_struct *vma,
+				       unsigned long addr, unsigned long len)
+{
+	struct thp_reservation *res;
+	struct hlist_node *tmp;
+	unsigned long eaddr;
+	int i;
+
+	if (!vma->thp_reservations)
+		return;
+
+	eaddr = addr + len;
+	addr &= HPAGE_PMD_MASK;
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
+		unsigned long hstart = res->haddr;
+
+		if (hstart >= addr && hstart < eaddr)
+			khugepaged_free_reservation(res);
+	}
+
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+}
+
+static void __khugepaged_move_reservations(struct vm_area_struct *src,
+					   struct vm_area_struct *dst,
+					   unsigned long split_addr,
+					   bool dst_is_below)
+{
+	struct thp_reservation *res;
+	struct hlist_node *tmp;
+	bool free_res = false;
+	int i;
+
+	if (!src->thp_reservations)
+		return;
+
+	if (!dst->thp_reservations)
+		free_res = true;
+
+	spin_lock(&src->thp_reservations->res_hash_lock);
+	if (!free_res)
+		spin_lock(&dst->thp_reservations->res_hash_lock);
+
+	hash_for_each_safe(src->thp_reservations->res_hash, i, tmp, res, node) {
+		unsigned long hstart = res->haddr;
+
+		/*
+		 * Free the reservation if it straddles a non-aligned
+		 * split address.
+		 */
+		if ((split_addr & ~HPAGE_PMD_MASK) &&
+		    (hstart == (split_addr & HPAGE_PMD_MASK))) {
+			khugepaged_free_reservation(res);
+			continue;
+		} else if (dst_is_below) {
+			if (hstart >= split_addr)
+				continue;
+		} else if (hstart < split_addr) {
+			continue;
+		}
+
+		if (unlikely(free_res)) {
+			khugepaged_free_reservation(res);
+			continue;
+		}
+
+		hash_del(&res->node);
+		res->vma = dst;
+		res->lock = &dst->thp_reservations->res_hash_lock;
+		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
+	}
+
+	if (!free_res)
+		spin_unlock(&dst->thp_reservations->res_hash_lock);
+	spin_unlock(&src->thp_reservations->res_hash_lock);
+}
+
+/*
+ * XXX dup from mm/mremap.c.  Move thp_reservations_mremap() to mm/mremap.c?
+ */
+static void take_rmap_locks(struct vm_area_struct *vma)
+{
+	if (vma->vm_file)
+		i_mmap_lock_write(vma->vm_file->f_mapping);
+	if (vma->anon_vma)
+		anon_vma_lock_write(vma->anon_vma);
+}
+
+/*
+ * XXX dup from mm/mremap.c.  Move thp_reservations_mremap() to mm/mremap.c?
+ */
+static void drop_rmap_locks(struct vm_area_struct *vma)
+{
+	if (vma->anon_vma)
+		anon_vma_unlock_write(vma->anon_vma);
+	if (vma->vm_file)
+		i_mmap_unlock_write(vma->vm_file->f_mapping);
+}
+
+void thp_reservations_mremap(struct vm_area_struct *vma,
+		unsigned long old_addr, struct vm_area_struct *new_vma,
+		unsigned long new_addr, unsigned long len,
+		bool need_rmap_locks)
+{
+
+	struct thp_reservation *res;
+	unsigned long eaddr, offset;
+	struct hlist_node *tmp;
+	int i;
+
+	if (!vma->thp_reservations)
+		return;
+
+	if (!new_vma->thp_reservations) {
+		__khugepaged_release_reservations(vma, old_addr, len);
+		return;
+	}
+
+	/*
+	 * Release all reservations if they will no longer be aligned
+	 * in the new address range.
+	 */
+	if ((new_addr & ~HPAGE_PMD_MASK) != (old_addr & ~HPAGE_PMD_MASK)) {
+		__khugepaged_release_reservations(vma, old_addr, len);
+		return;
+	}
+
+	if (need_rmap_locks)
+		take_rmap_locks(vma);
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+	spin_lock(&new_vma->thp_reservations->res_hash_lock);
+
+	/*
+	 * If the start or end addresses of the range are not huge page
+	 * aligned, check for overlapping reservations and release them.
+	 */
+	if (old_addr & ~HPAGE_PMD_MASK) {
+		res = khugepaged_find_reservation(vma, old_addr);
+		if (res)
+			khugepaged_free_reservation(res);
+	}
+
+	eaddr = old_addr + len;
+	if (eaddr & ~HPAGE_PMD_MASK) {
+		res = khugepaged_find_reservation(vma, eaddr);
+		if (res)
+			khugepaged_free_reservation(res);
+	}
+
+	offset = new_addr - old_addr;
+
+	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
+		unsigned long hstart = res->haddr;
+
+		if (hstart < old_addr || hstart >= eaddr)
+			continue;
+
+		hash_del(&res->node);
+		res->lock = &new_vma->thp_reservations->res_hash_lock;
+		res->vma = new_vma;
+		res->haddr += offset;
+		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
+	}
+
+	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+
+	if (need_rmap_locks)
+		drop_rmap_locks(vma);
+
+}
+
+/*
+ * Handle moving reservations for VMA merge cases 1, 6, 7, and 8 (see
+ * comments above vma_merge()) and when splitting a VMA.
+ *
+ * src is expected to be aligned with the start or end of dst
+ * src may be contained by dst or directly adjacent to dst
+ * Move all reservations if src is contained by dst.
+ * Otherwise move reservations no longer in the range of src
+ * to dst.
+ */
+void _khugepaged_reservations_fixup(struct vm_area_struct *src,
+				    struct vm_area_struct *dst)
+{
+	bool dst_is_below = false;
+	unsigned long split_addr;
+
+	if (src->vm_start == dst->vm_start || src->vm_end == dst->vm_end) {
+		split_addr = 0;
+	} else if (src->vm_start == dst->vm_end) {
+		split_addr = src->vm_start;
+		dst_is_below = true;
+	} else if (src->vm_end == dst->vm_start) {
+		split_addr = src->vm_end;
+	} else {
+		WARN_ON(1);
+		return;
+	}
+
+	__khugepaged_move_reservations(src, dst, split_addr, dst_is_below);
+}
+
+/*
+ * Handle moving reservations for VMA merge cases 4 and 5 (see comments
+ * above vma_merge()).
+ */
+void _khugepaged_move_reservations_adj(struct vm_area_struct *prev,
+				       struct vm_area_struct *next, long adjust)
+{
+	unsigned long split_addr = next->vm_start;
+	struct vm_area_struct *src, *dst;
+	bool dst_is_below;
+
+	if (adjust < 0) {
+		src = prev;
+		dst = next;
+		dst_is_below = false;
+	} else {
+		src = next;
+		dst = prev;
+		dst_is_below = true;
+	}
+
+	__khugepaged_move_reservations(src, dst, split_addr, dst_is_below);
+}
+
+void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
+				unsigned long address, int delta)
+{
+	struct thp_reservation *res;
+
+	if (!vma->thp_reservations)
+		return;
+
+	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+	res = khugepaged_find_reservation(vma, address);
+	if (res) {
+		WARN_ON((res->nr_unused == 0) || (res->nr_unused + delta < 0));
+		if (res->nr_unused + delta >= 0)
+			res->nr_unused += delta;
+	}
+
+	spin_unlock(&vma->thp_reservations->res_hash_lock);
+}
 
 /**
  * struct mm_slot - hash lookup from mm to mm_slot
@@ -197,6 +638,15 @@ static ssize_t pages_collapsed_show(struct kobject *kobj,
 static struct kobj_attribute pages_collapsed_attr =
 	__ATTR_RO(pages_collapsed);
 
+static ssize_t res_pages_collapsed_show(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    char *buf)
+{
+	return sprintf(buf, "%u\n", khugepaged_res_pages_collapsed);
+}
+static struct kobj_attribute res_pages_collapsed_attr =
+	__ATTR_RO(res_pages_collapsed);
+
 static ssize_t full_scans_show(struct kobject *kobj,
 			       struct kobj_attribute *attr,
 			       char *buf)
@@ -292,6 +742,7 @@ static struct attribute *khugepaged_attr[] = {
 	&scan_sleep_millisecs_attr.attr,
 	&alloc_sleep_millisecs_attr.attr,
 	&khugepaged_max_ptes_swap_attr.attr,
+	&res_pages_collapsed_attr.attr,
 	NULL,
 };
 
@@ -342,8 +793,96 @@ int hugepage_madvise(struct vm_area_struct *vma,
 	return 0;
 }
 
+/*
+ * thp_lru_free_reservation() - shrinker callback to release THP reservations
+ * and free unused pages
+ *
+ * Called from list_lru_shrink_walk() in thp_resvs_shrink_scan() to free
+ * up pages when the system is under memory pressure.
+ */
+enum lru_status thp_lru_free_reservation(struct list_head *item,
+					 struct list_lru_one *lru,
+					 spinlock_t *lock,
+					 void *cb_arg)
+{
+	struct mm_struct *mm = NULL;
+	struct thp_reservation *res = container_of(item,
+						   struct thp_reservation,
+						   lru);
+	struct page *page;
+	int unused;
+	int i;
+
+	if (!spin_trylock(res->lock))
+		goto err_get_res_lock_failed;
+
+	mm = res->vma->vm_mm;
+	if (!mmget_not_zero(mm))
+		goto err_mmget;
+	if (!down_write_trylock(&mm->mmap_sem))
+		goto err_down_write_mmap_sem_failed;
+
+	list_lru_isolate(lru, item);
+	spin_unlock(lock);
+
+	hash_del(&res->node);
+
+	up_write(&mm->mmap_sem);
+	mmput(mm);
+
+	spin_unlock(res->lock);
+
+	page = res->page;
+	unused = res->nr_unused;
+
+	kfree(res);
+
+	for (i = 0; i < HPAGE_PMD_NR; i++)
+		put_page(page + i);
+
+	if (unused)
+		mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, -unused);
+
+	spin_lock(lock);
+
+	return LRU_REMOVED_RETRY;
+
+err_down_write_mmap_sem_failed:
+	mmput_async(mm);
+err_mmget:
+	spin_unlock(res->lock);
+err_get_res_lock_failed:
+	return LRU_SKIP;
+}
+
+static unsigned long
+thp_resvs_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
+{
+	unsigned long ret = list_lru_shrink_count(&thp_reservations_lru, sc);
+	return ret;
+}
+
+static unsigned long
+thp_resvs_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
+{
+	unsigned long ret;
+
+	ret = list_lru_shrink_walk(&thp_reservations_lru, sc,
+				   thp_lru_free_reservation, NULL);
+	return ret;
+}
+
+static struct shrinker thp_resvs_shrinker = {
+	.count_objects = thp_resvs_shrink_count,
+	.scan_objects = thp_resvs_shrink_scan,
+	.seeks = DEFAULT_SEEKS,
+	.flags = SHRINKER_NUMA_AWARE,
+};
+
 int __init khugepaged_init(void)
 {
+	int err;
+
 	mm_slot_cache = kmem_cache_create("khugepaged_mm_slot",
 					  sizeof(struct mm_slot),
 					  __alignof__(struct mm_slot), 0, NULL);
@@ -353,6 +892,17 @@ int __init khugepaged_init(void)
 	khugepaged_pages_to_scan = HPAGE_PMD_NR * 8;
 	khugepaged_max_ptes_none = HPAGE_PMD_NR - 1;
 	khugepaged_max_ptes_swap = HPAGE_PMD_NR / 8;
+
+	// XXX should be in hugepage_init() so shrinker can be
+	// unregistered if necessary.
+	err = list_lru_init(&thp_reservations_lru);
+	if (err == 0) {
+		err = register_shrinker(&thp_resvs_shrinker);
+		if (err) {
+			list_lru_destroy(&thp_reservations_lru);
+			return err;
+		}
+	}
 
 	return 0;
 }
@@ -519,12 +1069,14 @@ static void release_pte_pages(pte_t *pte, pte_t *_pte)
 
 static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
 					unsigned long address,
-					pte_t *pte)
+					pte_t *pte,
+					struct thp_reservation *res)
 {
 	struct page *page = NULL;
 	pte_t *_pte;
 	int none_or_zero = 0, result = 0, referenced = 0;
 	bool writable = false;
+	bool is_reserved = res ? true : false;
 
 	for (_pte = pte; _pte < pte+HPAGE_PMD_NR;
 	     _pte++, address += PAGE_SIZE) {
@@ -573,7 +1125,7 @@ static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
 		 * The page must only be referenced by the scanned process
 		 * and page swap cache.
 		 */
-		if (page_count(page) != 1 + PageSwapCache(page)) {
+		if (page_count(page) != 1 + PageSwapCache(page) + is_reserved) {
 			unlock_page(page);
 			result = SCAN_PAGE_COUNT;
 			goto out;
@@ -629,6 +1181,68 @@ out:
 	trace_mm_collapse_huge_page_isolate(page, none_or_zero,
 					    referenced, writable, result);
 	return 0;
+}
+
+static void __collapse_huge_page_convert(pte_t *pte, struct page *page,
+				      struct vm_area_struct *vma,
+				      unsigned long address,
+				      spinlock_t *ptl)
+{
+	struct page *head = page;
+	pte_t *_pte;
+
+	set_page_count(page, 1);
+
+	for (_pte = pte; _pte < pte + HPAGE_PMD_NR;
+				_pte++, page++, address += PAGE_SIZE) {
+		pte_t pteval = *_pte;
+
+		if (pte_none(pteval) || is_zero_pfn(pte_pfn(pteval))) {
+			clear_user_highpage(page, address);
+			add_mm_counter(vma->vm_mm, MM_ANONPAGES, 1);
+			if (is_zero_pfn(pte_pfn(pteval))) {
+				/*
+				 * ptl mostly unnecessary.
+				 */
+				spin_lock(ptl);
+				/*
+				 * paravirt calls inside pte_clear here are
+				 * superfluous.
+				 */
+				pte_clear(vma->vm_mm, address, _pte);
+				spin_unlock(ptl);
+			}
+			dec_node_page_state(page, NR_THP_RESERVED);
+		} else {
+			dec_node_page_state(page, NR_ISOLATED_ANON +
+					    page_is_file_cache(page));
+			unlock_page(page);
+			ClearPageActive(page);
+			/*
+			 * ptl mostly unnecessary, but preempt has to
+			 * be disabled to update the per-cpu stats
+			 * inside page_remove_rmap().
+			 */
+			spin_lock(ptl);
+			/*
+			 * paravirt calls inside pte_clear here are
+			 * superfluous.
+			 */
+			pte_clear(vma->vm_mm, address, _pte);
+			page_remove_rmap(page, false);
+			spin_unlock(ptl);
+			/*
+			 * Swapping out a page in a reservation
+			 * causes the reservation to be released
+			 * therefore no pages in a reservation
+			 * should be in swapcache.
+			 */
+			WARN_ON(PageSwapCache(page));
+		}
+	}
+
+	prep_compound_page(head, HPAGE_PMD_ORDER);
+	prep_transhuge_page(head);
 }
 
 static void __collapse_huge_page_copy(pte_t *pte, struct page *page,
@@ -934,7 +1548,8 @@ static bool __collapse_huge_page_swapin(struct mm_struct *mm,
 static void collapse_huge_page(struct mm_struct *mm,
 				   unsigned long address,
 				   struct page **hpage,
-				   int node, int referenced)
+				   int node, int referenced,
+				   struct thp_reservation *res)
 {
 	pmd_t *pmd, _pmd;
 	pte_t *pte;
@@ -947,6 +1562,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	unsigned long mmun_start;	/* For mmu_notifiers */
 	unsigned long mmun_end;		/* For mmu_notifiers */
 	gfp_t gfp;
+	bool is_reserved = false;
 
 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
 
@@ -959,30 +1575,38 @@ static void collapse_huge_page(struct mm_struct *mm,
 	 * sync compaction, and we do not need to hold the mmap_sem during
 	 * that. We will recheck the vma after taking it again in write mode.
 	 */
-	up_read(&mm->mmap_sem);
-	new_page = khugepaged_alloc_page(hpage, gfp, node);
-	if (!new_page) {
-		result = SCAN_ALLOC_HUGE_PAGE_FAIL;
-		goto out_nolock;
-	}
-
-	if (unlikely(mem_cgroup_try_charge(new_page, mm, gfp, &memcg, true))) {
-		result = SCAN_CGROUP_CHARGE_FAIL;
-		goto out_nolock;
-	}
-
-	down_read(&mm->mmap_sem);
-	result = hugepage_vma_revalidate(mm, address, &vma);
-	if (result) {
-		mem_cgroup_cancel_charge(new_page, memcg, true);
+	if (res) {
+		new_page = res->page;
+		vma = res->vma;
+		is_reserved = true;
+	} else {
 		up_read(&mm->mmap_sem);
-		goto out_nolock;
+		new_page = khugepaged_alloc_page(hpage, gfp, node);
+
+		if (!new_page) {
+			result = SCAN_ALLOC_HUGE_PAGE_FAIL;
+			goto out_nolock;
+		}
+
+		if (unlikely(mem_cgroup_try_charge(new_page, mm, gfp, &memcg, true))) {
+			result = SCAN_CGROUP_CHARGE_FAIL;
+			goto out_nolock;
+		}
+
+		down_read(&mm->mmap_sem);
+		result = hugepage_vma_revalidate(mm, address, &vma);
+		if (result) {
+			mem_cgroup_cancel_charge(new_page, memcg, true);
+			up_read(&mm->mmap_sem);
+			goto out_nolock;
+		}
 	}
 
 	pmd = mm_find_pmd(mm, address);
 	if (!pmd) {
 		result = SCAN_PMD_NULL;
-		mem_cgroup_cancel_charge(new_page, memcg, true);
+		if (is_reserved == false)
+			mem_cgroup_cancel_charge(new_page, memcg, true);
 		up_read(&mm->mmap_sem);
 		goto out_nolock;
 	}
@@ -993,7 +1617,8 @@ static void collapse_huge_page(struct mm_struct *mm,
 	 * Continuing to collapse causes inconsistency.
 	 */
 	if (!__collapse_huge_page_swapin(mm, vma, address, pmd, referenced)) {
-		mem_cgroup_cancel_charge(new_page, memcg, true);
+		if (is_reserved == false)
+			mem_cgroup_cancel_charge(new_page, memcg, true);
 		up_read(&mm->mmap_sem);
 		goto out_nolock;
 	}
@@ -1014,6 +1639,42 @@ static void collapse_huge_page(struct mm_struct *mm,
 
 	anon_vma_lock_write(vma->anon_vma);
 
+	/*
+	 * Revalidate the reservation now that the locking guarantees it will
+	 * not be released.
+	 */
+	if (is_reserved) {
+		int pgs_inuse;
+
+		res = khugepaged_find_reservation(vma, address);
+		if (!res) {
+			anon_vma_unlock_write(vma->anon_vma);
+			result = SCAN_VMA_CHECK;
+			goto out_up_write;
+		}
+
+		/*
+		 * XXX highly unlikely that the check in khugepage_scan_pmd()
+		 * would pass and this one would fail.
+		 */
+		pgs_inuse = HPAGE_PMD_NR - res->nr_unused;
+		if (pgs_inuse < hugepage_promotion_threshold) {
+			result = SCAN_PAGE_COUNT;
+			goto out_up_write;
+		}
+
+		new_page = res->page;
+
+		/* XXX
+		 * If some pages in the reservation are unused at this point,
+		 * they should be charged to a memcg if applicable.  Need to
+		 * determine the right way to do this when no further faults
+		 * can happen and the reservation will not be released.
+		 * mem_cgroup_try_charge() works by charging one page (or
+		 * huge page) at a time.
+		 */
+	}
+
 	pte = pte_offset_map(pmd, address);
 	pte_ptl = pte_lockptr(mm, pmd);
 
@@ -1032,7 +1693,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	mmu_notifier_invalidate_range_end(mm, mmun_start, mmun_end);
 
 	spin_lock(pte_ptl);
-	isolated = __collapse_huge_page_isolate(vma, address, pte);
+	isolated = __collapse_huge_page_isolate(vma, address, pte, res);
 	spin_unlock(pte_ptl);
 
 	if (unlikely(!isolated)) {
@@ -1057,7 +1718,12 @@ static void collapse_huge_page(struct mm_struct *mm,
 	 */
 	anon_vma_unlock_write(vma->anon_vma);
 
-	__collapse_huge_page_copy(pte, new_page, vma, address, pte_ptl);
+	if (is_reserved) {
+		__collapse_huge_page_convert(pte, new_page, vma, address, pte_ptl);
+		khugepaged_free_reservation(res);
+	} else {
+		__collapse_huge_page_copy(pte, new_page, vma, address, pte_ptl);
+	}
 	pte_unmap(pte);
 	__SetPageUptodate(new_page);
 	pgtable = pmd_pgtable(_pmd);
@@ -1075,7 +1741,10 @@ static void collapse_huge_page(struct mm_struct *mm,
 	spin_lock(pmd_ptl);
 	BUG_ON(!pmd_none(*pmd));
 	page_add_new_anon_rmap(new_page, vma, address, true);
-	mem_cgroup_commit_charge(new_page, memcg, false, true);
+	if (is_reserved)
+		mem_cgroup_collapse_huge_fixup(new_page);
+	else
+		mem_cgroup_commit_charge(new_page, memcg, false, true);
 	lru_cache_add_active_or_unevictable(new_page, vma);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
 	set_pmd_at(mm, address, pmd, _pmd);
@@ -1085,6 +1754,10 @@ static void collapse_huge_page(struct mm_struct *mm,
 	*hpage = NULL;
 
 	khugepaged_pages_collapsed++;
+
+	if (is_reserved)
+		khugepaged_res_pages_collapsed++;
+
 	result = SCAN_SUCCEED;
 out_up_write:
 	up_write(&mm->mmap_sem);
@@ -1092,7 +1765,8 @@ out_nolock:
 	trace_mm_collapse_huge_page(mm, isolated, result);
 	return;
 out:
-	mem_cgroup_cancel_charge(new_page, memcg, true);
+	if (is_reserved == false)
+		mem_cgroup_cancel_charge(new_page, memcg, true);
 	goto out_up_write;
 }
 
@@ -1109,6 +1783,7 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 	spinlock_t *ptl;
 	int node = NUMA_NO_NODE, unmapped = 0;
 	bool writable = false;
+	struct thp_reservation *res = 0;
 
 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
 
@@ -1184,12 +1859,22 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 			goto out_unmap;
 		}
 
+		res = khugepaged_find_reservation(vma, address);
+		if (res) {
+			int pgs_inuse = HPAGE_PMD_NR - res->nr_unused;
+
+			if (pgs_inuse < hugepage_promotion_threshold) {
+				result = SCAN_PAGE_COUNT;
+				goto out_unmap;
+			}
+		}
+
 		/*
 		 * cannot use mapcount: can't collapse if there's a gup pin.
 		 * The page must only be referenced by the scanned process
 		 * and page swap cache.
 		 */
-		if (page_count(page) != 1 + PageSwapCache(page)) {
+		if (page_count(page) != 1 + PageSwapCache(page) + (res ? 1 : 0)) {
 			result = SCAN_PAGE_COUNT;
 			goto out_unmap;
 		}
@@ -1213,7 +1898,7 @@ out_unmap:
 	if (ret) {
 		node = khugepaged_find_target_node();
 		/* collapse_huge_page will return with the mmap_sem released */
-		collapse_huge_page(mm, address, hpage, node, referenced);
+		collapse_huge_page(mm, address, hpage, node, referenced, res);
 	}
 out:
 	trace_mm_khugepaged_scan_pmd(mm, page, writable, referenced,

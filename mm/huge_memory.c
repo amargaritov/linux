@@ -57,6 +57,8 @@ unsigned long transparent_hugepage_flags __read_mostly =
 	(1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG)|
 	(1<<TRANSPARENT_HUGEPAGE_USE_ZERO_PAGE_FLAG);
 
+unsigned int hugepage_promotion_threshold __read_mostly = HPAGE_PMD_NR / 2;
+
 static struct shrinker deferred_split_shrinker;
 
 static atomic_t huge_zero_refcount;
@@ -288,6 +290,28 @@ static ssize_t use_zero_page_store(struct kobject *kobj,
 static struct kobj_attribute use_zero_page_attr =
 	__ATTR(use_zero_page, 0644, use_zero_page_show, use_zero_page_store);
 
+static ssize_t promotion_threshold_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%u\n", hugepage_promotion_threshold);
+}
+static ssize_t promotion_threshold_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int err;
+	unsigned long promotion_threshold;
+
+	err = kstrtoul(buf, 10, &promotion_threshold);
+	if (err || promotion_threshold < 1 || promotion_threshold > HPAGE_PMD_NR)
+		return -EINVAL;
+
+	hugepage_promotion_threshold = promotion_threshold;
+
+	return count;
+}
+static struct kobj_attribute promotion_threshold_attr =
+	__ATTR(promotion_threshold, 0644, promotion_threshold_show, promotion_threshold_store);
+
 static ssize_t hpage_pmd_size_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
@@ -318,6 +342,7 @@ static struct attribute *hugepage_attr[] = {
 	&enabled_attr.attr,
 	&defrag_attr.attr,
 	&use_zero_page_attr.attr,
+	&promotion_threshold_attr.attr,
 	&hpage_pmd_size_attr.attr,
 #if defined(CONFIG_SHMEM) && defined(CONFIG_TRANSPARENT_HUGE_PAGECACHE)
 	&shmem_enabled_attr.attr,
@@ -670,6 +695,10 @@ vm_fault_t do_huge_pmd_anonymous_page(struct vm_fault *vmf)
 	struct page *page;
 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
 
+	if (hugepage_promotion_threshold > 1) {
+		khugepaged_reserve(vma, vmf->address);
+		return VM_FAULT_FALLBACK;
+	}
 	if (haddr < vma->vm_start || haddr + HPAGE_PMD_SIZE > vma->vm_end)
 		return VM_FAULT_FALLBACK;
 	if (unlikely(anon_vma_prepare(vma)))

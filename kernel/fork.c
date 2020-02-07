@@ -527,6 +527,8 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		if (is_vm_hugetlb_page(tmp))
 			reset_vma_resv_huge_pages(tmp);
 
+		thp_resvs_fork(tmp, mpnt);
+
 		/*
 		 * Link in the new vma and copy the page table entries.
 		 */

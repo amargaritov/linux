@@ -2,6 +2,7 @@
 #ifndef _LINUX_KHUGEPAGED_H
 #define _LINUX_KHUGEPAGED_H
 
+#include <linux/hashtable.h>
 #include <linux/sched/coredump.h> /* MMF_VM_HUGEPAGE */
 
 
@@ -30,6 +31,64 @@ extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma,
 	(transparent_hugepage_flags &				\
 	 (1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG))
 
+struct thp_reservation {
+	spinlock_t *lock;
+	unsigned long haddr;
+	struct page *page;
+	struct vm_area_struct *vma;
+	struct hlist_node node;
+	struct list_head lru;
+	int nr_unused;
+};
+
+struct thp_resvs {
+	atomic_t refcnt;
+	spinlock_t res_hash_lock;
+	DECLARE_HASHTABLE(res_hash, 7);
+};
+
+#define	vma_thp_reservations(vma)	((vma)->thp_reservations)
+
+static inline void thp_resvs_fork(struct vm_area_struct *vma,
+				  struct vm_area_struct *pvma)
+{
+	// XXX Do not share THP reservations for now
+	vma->thp_reservations = NULL;
+}
+
+void thp_resvs_new(struct vm_area_struct *vma);
+
+extern void __thp_resvs_put(struct thp_resvs *r);
+static inline void thp_resvs_put(struct thp_resvs *r)
+{
+	if (r)
+		__thp_resvs_put(r);
+}
+
+void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
+				  unsigned long address, int delta);
+
+struct page *khugepaged_get_reserved_page(
+	struct vm_area_struct *vma,
+	unsigned long address);
+
+void khugepaged_reserve(struct vm_area_struct *vma,
+			unsigned long address);
+
+void khugepaged_release_reservation(struct vm_area_struct *vma,
+				    unsigned long address);
+
+void _khugepaged_reservations_fixup(struct vm_area_struct *src,
+				   struct vm_area_struct *dst);
+
+void _khugepaged_move_reservations_adj(struct vm_area_struct *prev,
+				      struct vm_area_struct *next, long adjust);
+
+void thp_reservations_mremap(struct vm_area_struct *vma,
+		unsigned long old_addr, struct vm_area_struct *new_vma,
+		unsigned long new_addr, unsigned long len,
+		bool need_rmap_locks);
+
 static inline int khugepaged_fork(struct mm_struct *mm, struct mm_struct *oldmm)
 {
 	if (test_bit(MMF_VM_HUGEPAGE, &oldmm->flags))
@@ -56,6 +115,66 @@ static inline int khugepaged_enter(struct vm_area_struct *vma,
 	return 0;
 }
 #else /* CONFIG_TRANSPARENT_HUGEPAGE */
+
+#define	vma_thp_reservations(vma)	NULL
+
+static inline void thp_resvs_fork(struct vm_area_struct *vma,
+				  struct vm_area_struct *pvma)
+{
+}
+
+static inline void thp_resvs_new(struct vm_area_struct *vma)
+{
+}
+
+static inline void __thp_resvs_put(struct thp_resvs *r)
+{
+}
+
+static inline void thp_resvs_put(struct thp_resvs *r)
+{
+}
+
+static inline void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
+					      unsigned long address, int delta)
+{
+}
+
+static inline struct page *khugepaged_get_reserved_page(
+	struct vm_area_struct *vma,
+	unsigned long address)
+{
+	return NULL;
+}
+
+static inline void khugepaged_reserve(struct vm_area_struct *vma,
+			       unsigned long address)
+{
+}
+
+static inline void khugepaged_release_reservation(struct vm_area_struct *vma,
+				    unsigned long address)
+{
+}
+
+static inline void _khugepaged_reservations_fixup(struct vm_area_struct *src,
+				   struct vm_area_struct *dst)
+{
+}
+
+static inline void _khugepaged_move_reservations_adj(
+				struct vm_area_struct *prev,
+				struct vm_area_struct *next, long adjust)
+{
+}
+
+static inline void thp_reservations_mremap(struct vm_area_struct *vma,
+		unsigned long old_addr, struct vm_area_struct *new_vma,
+		unsigned long new_addr, unsigned long len,
+		bool need_rmap_locks)
+{
+}
+
 static inline int khugepaged_fork(struct mm_struct *mm, struct mm_struct *oldmm)
 {
 	return 0;
