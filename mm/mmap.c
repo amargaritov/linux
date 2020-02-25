@@ -917,6 +917,7 @@ again:
 			anon_vma_merge(vma, next);
 		mm->map_count--;
 		mpol_put(vma_policy(next));
+    thp_resvs_put(vma_thp_reservations(next));
 		vm_area_free(next);
 		/*
 		 * In mprotect's case 6 (see comments on vma_merge),
@@ -1840,6 +1841,7 @@ allow_write_and_free_vma:
 	if (vm_flags & VM_DENYWRITE)
 		allow_write_access(file);
 free_vma:
+	thp_resvs_put(vma_thp_reservations(vma));
 	vm_area_free(vma);
 unacct_error:
 	if (charged)
@@ -2676,6 +2678,7 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
  out_free_mpol:
 	mpol_put(vma_policy(new));
  out_free_vma:
+	thp_resvs_put(vma_thp_reservations(new));
 	vm_area_free(new);
 	return err;
 }
@@ -3231,6 +3234,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 out_free_mempol:
 	mpol_put(vma_policy(new_vma));
 out_free_vma:
+	thp_resvs_put(vma_thp_reservations(new_vma));
 	vm_area_free(new_vma);
 out:
 	return NULL;
@@ -3379,6 +3383,7 @@ static struct vm_area_struct *__install_special_mapping(
 	return vma;
 
 out:
+	thp_resvs_put(vma_thp_reservations(vma));
 	vm_area_free(vma);
 	return ERR_PTR(ret);
 }

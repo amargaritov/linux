@@ -564,6 +564,7 @@ fail_uprobe_end:
 fail_nomem_anon_vma_fork:
 	mpol_put(vma_policy(tmp));
 fail_nomem_policy:
+	thp_resvs_put(vma_thp_reservations(tmp));
 	vm_area_free(tmp);
 fail_nomem:
 	retval = -ENOMEM;

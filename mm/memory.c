@@ -1439,7 +1439,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 		if (pmd_none_or_trans_huge_or_clear_bad(pmd))
 			goto next;
 		next = zap_pte_range(tlb, vma, pmd, addr, next, details);
-		khugepaged_release_reservation(vma, addr);
+		//khugepaged_release_reservation(vma, addr);
 next:
 		cond_resched();
 	} while (pmd++, addr = next, addr != end);
@@ -2507,8 +2507,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			new_page = alloc_zeroed_user_highpage_movable(vma,
 							      vmf->address);
 		} else {
-		      clear_user_highpage(new_page, vmf->address);
-		      pg_from_reservation = true;
+      clear_user_highpage(new_page, vmf->address);
+      pg_from_reservation = true;
 		}
 
 		if (!new_page)

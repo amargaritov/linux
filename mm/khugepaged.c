@@ -117,34 +117,47 @@ static struct thp_reservation *khugepaged_find_reservation(
 	if (!vma->thp_reservations)
 		return NULL;
 
+// From ./include/linux/hashtable.h
+/**
+ * hash_for_each_possible - iterate over all possible objects hashing to the
+ * same bucket
+ * @name: hashtable to iterate
+ * @obj: the type * to use as a loop cursor for each entry
+ * @member: the name of the hlist_node within the struct
+ * @key: the key of the objects to iterate over
+ */
 	hash_for_each_possible(vma->thp_reservations->res_hash, res, node, haddr) {
-		if (res->haddr == haddr)
+		if (res->haddr == haddr) {
 			break;
+    }
 	}
 	return res;
 }
 
-static void khugepaged_free_reservation(struct thp_reservation *res)
+void khugepaged_free_reservation(struct thp_reservation *res)
 {
 	struct page *page;
 	int unused;
 	int i;
+  char mask;
 
 	list_lru_del(&thp_reservations_lru, &res->lru);
 	hash_del(&res->node);
 	page = res->page;
 	unused = res->nr_unused;
+  mask = res->used_mask;
 
 	kfree(res);
 
 	if (!PageCompound(page)) {
-		for (i = 0; i < RESERV_NR; i++) //Artemiy changed
-			put_page(page + i);
+    for (i = 0; i < RESERV_NR; i++) //Artemiy changed
+      if (CHECK_BIT(mask, i) == 0)
+        put_page(page + i);
 
-		if (unused) {
-			mod_node_page_state(page_pgdat(page), NR_THP_RESERVED,
-					    -unused);
-		}
+    if (unused) {
+      mod_node_page_state(page_pgdat(page), NR_THP_RESERVED,
+              -unused);
+    }
 	}
 }
 
@@ -162,7 +175,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	if (!vma_is_anonymous(vma))
 		return;
 	// Check if region will lie in the vma boundaries
-	if (haddr < vma->vm_start || haddr + RESERV_SIZE > vma->vm_end) //Artemiy changed 
+	if ((haddr < vma->vm_start) || (haddr + RESERV_SIZE > vma->vm_end)) //Artemiy changed 
 		return;
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
@@ -242,14 +255,18 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 	res = khugepaged_find_reservation(vma, address);
 	if (res) {
 		unsigned long offset = address & (~RESERV_MASK); //Artemiy changed
+    //~RESERV_MASK is 00000000000000000111111111111111
 
-		page = res->page + (offset >> PAGE_SHIFT);
+    int region_offset = offset >> PAGE_SHIFT; //PAGE_SHIFT is 12
+		page = res->page + region_offset;
 		get_page(page);
 
 		list_lru_del(&thp_reservations_lru, &res->lru);
 		list_lru_add(&thp_reservations_lru, &res->lru);
 
 		dec_node_page_state(res->page, NR_THP_RESERVED);
+
+    SET_BIT(res->used_mask, region_offset);
 	}
 
 	spin_unlock(&vma->thp_reservations->res_hash_lock);
@@ -849,10 +866,11 @@ enum lru_status thp_lru_free_reservation(struct list_head *item,
 	page = res->page;
 	unused = res->nr_unused;
 
-	kfree(res);
-
 	for (i = 0; i < RESERV_NR; i++) //Artemiy changed 
-		put_page(page + i);
+    if ((CHECK_BIT(res->used_mask, i) == 0))
+      put_page(page + i);
+
+	kfree(res);
 
 	if (unused)
 		mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, -unused);

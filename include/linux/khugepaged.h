@@ -7,11 +7,14 @@
 
 #define RESERV_ORDER           3 
 #define RESERV_SHIFT           (RESERV_ORDER + PAGE_SHIFT) // 3 + 12 = 15
-#define RESERV_SIZE            ((1UL) << RESERV_SHIFT)     // (1 << 15) = ...00100...0
-#define RESERV_MASK            (~( RESERV_SIZE - 1))       //             ...111000000
-#define RESERV_NR              ((1UL) << RESERV_ORDER)     // 8 
+#define RESERV_SIZE            ((1UL) << RESERV_SHIFT)     // 00000000000000001000000000000000 //32768 
+#define RESERV_MASK            (~( RESERV_SIZE - 1))       // 11111111111111111000000000000000 //-32768
+#define RESERV_NR              ((1UL) << RESERV_ORDER)     // 00000000000000000000000000001000 //8
 #define RESERV_GROUP_NR_IN_PMD (HPAGE_PMD_NR / RESERV_NR)  // 512 / 8 = 64
-#define RESERV_OFFSET_MASK     ((1UL << RESERV_ORDER) - 1) // ...000111 
+#define RESERV_OFFSET_MASK     ((1UL << RESERV_ORDER) - 1) // 00000000000000000000000000000111 //7
+
+#define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
+#define SET_BIT(var,pos)   ((var) &= (1<<(pos)))
 
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -47,6 +50,7 @@ struct thp_reservation {
 	struct hlist_node node;
 	struct list_head lru;
 	int nr_unused;
+  unsigned char used_mask; //Artemiy added to indicate which pages are used (others are reserved)
 };
 
 struct thp_resvs {
@@ -66,11 +70,35 @@ static inline void thp_resvs_fork(struct vm_area_struct *vma,
 
 void thp_resvs_new(struct vm_area_struct *vma);
 
+
+extern void khugepaged_free_reservation(struct thp_reservation *res);
+
 extern void __thp_resvs_put(struct thp_resvs *r);
 static inline void thp_resvs_put(struct thp_resvs *r)
 {
-	if (r)
-		__thp_resvs_put(r);
+	struct hlist_node *tmp;
+	int i;
+	struct thp_reservation *res = NULL;
+
+	if (r) {
+    //Artemiy release on dealocation
+    /**
+     *  * hash_for_each - iterate over a hashtable
+     *  * @name: hashtable to iterate
+     *  * @bkt: integer to use as bucket loop cursor
+     *  * @obj: the type * to use as a loop cursor for each entry
+     *  * @member: the name of the hlist_node within the struct
+     *  */
+
+//    int bkt = 0;
+//    hash_for_each(r->res_hash, bkt, res, node) {
+//      khugepaged_free_reservation(res);
+//    }
+    hash_for_each_safe(r->res_hash, i, tmp, res, node) {
+      khugepaged_free_reservation(res);
+    }
+    __thp_resvs_put(r);
+  }
 }
 
 void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
