@@ -210,7 +210,8 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	for (i = 0; i < RESERV_NR; i++) //Artemiy changed
 		set_page_count(page + i, 1);
 
-	res = kzalloc(sizeof(*res), GFP_KERNEL);
+//	res = kzalloc(sizeof(*res), GFP_KERNEL); //Artemiy change to prevent blocking and fix the deadlock on bfs/pgr
+	res = kzalloc(sizeof(*res), GFP_KERNEL & ~__GFP_DIRECT_RECLAIM);
 	if (!res) {
 		// Was not able to allocate memory for auxilary kernel structure thp_reservation
 		count_vm_event(THP_RES_ALLOC_FAILED);
