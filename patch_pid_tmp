@@ -1,0 +1,17 @@
+diff --git a/mm/memory.c b/mm/memory.c
+index dbee35dfc14a..3a36792519a9 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -3191,6 +3191,12 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
+ 	if (unlikely(anon_vma_prepare(vma)))
+ 		goto oom;
+ 
++  bool my_app = (vma->vm_mm->owner->pid == 5555);
++
++  if (my_app) {
++    printk("%s", "I am running my app!!!");
++  }
++
+ 	page = khugepaged_get_reserved_page(vma, vmf->address);
+ 	if (!page) {
+ 		// Try to reserve pages

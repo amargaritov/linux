@@ -999,6 +999,9 @@ static inline int is_mergeable_vma(struct vm_area_struct *vma,
 	 * the kernel to generate new VMAs when old one could be
 	 * extended instead.
 	 */
+//  bool my_app = (vma->vm_mm->owner->pid == 5555);
+//  if (my_app)
+//    return 0;
 	if ((vma->vm_flags ^ vm_flags) & ~VM_SOFTDIRTY)
 		return 0;
 	if (vma->vm_file != file)

@@ -56,7 +56,7 @@ struct thp_reservation {
 struct thp_resvs {
 	atomic_t refcnt;
 	spinlock_t res_hash_lock;
-	DECLARE_HASHTABLE(res_hash, 7);
+	DECLARE_HASHTABLE(res_hash, 22);
 };
 
 #define	vma_thp_reservations(vma)	((vma)->thp_reservations)

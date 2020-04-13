@@ -1,0 +1,14 @@
+diff --git a/mm/mmap.c b/mm/mmap.c
+index a1979392273b..362ef9f307e1 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -1006,7 +1006,8 @@ static inline int is_mergeable_vma(struct vm_area_struct *vma,
+ 		return 0;
+ 	if (!is_mergeable_vm_userfaultfd_ctx(vma, vm_userfaultfd_ctx))
+ 		return 0;
+-	return 1;
++//	return 1;
++	return 0;
+ }
+ 
+ static inline int is_mergeable_anon_vma(struct anon_vma *anon_vma1,

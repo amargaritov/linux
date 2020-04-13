@@ -3146,6 +3146,8 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	pte_t entry;
 	bool pg_from_reservation = false;
 
+  bool my_app = (vma->vm_mm->owner->pid == 5555);
+
 	/* File mapping without ->vm_ops ? */
 	if (vma->vm_flags & VM_SHARED)
 		return VM_FAULT_SIGBUS;
@@ -3191,11 +3193,21 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
+//  if (my_app) {
+//    printk("%s", "I am running my app!!!");
+//  }
+
+  if (my_app) {
 	page = khugepaged_get_reserved_page(vma, vmf->address);
+  } else {
+  page = NULL;
+  }
 	if (!page) {
 		// Try to reserve pages
+    if (my_app) {
 		khugepaged_reserve(vma, vmf->address); //Artemiy changed
 		page = khugepaged_get_reserved_page(vma, vmf->address);
+    }
 		if (!page) {
 			// Allocate one page
 			page = alloc_zeroed_user_highpage_movable(vma, vmf->address);

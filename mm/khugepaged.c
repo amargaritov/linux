@@ -84,10 +84,15 @@ void thp_resvs_new(struct vm_area_struct *vma)
 {
 	struct thp_resvs *new = NULL;
 
+  bool my_app = (vma->vm_mm->owner->pid == 5555);
+  if (!my_app)
+    goto done;
+
 	if (hugepage_promotion_threshold == 1)
 		goto done;
 
-	new = kzalloc(sizeof(struct thp_resvs), GFP_KERNEL);
+//	new = kzalloc(sizeof(struct thp_resvs), GFP_KERNEL);
+	new = vmalloc(sizeof(struct thp_resvs));
 	if (!new)
 		goto done;
 
@@ -104,7 +109,8 @@ void __thp_resvs_put(struct thp_resvs *resv)
 	if (!atomic_dec_and_test(&resv->refcnt))
 		return;
 
-	kfree(resv);
+//	kfree(resv);
+	vfree(resv);
 }
 
 static struct thp_reservation *khugepaged_find_reservation(
