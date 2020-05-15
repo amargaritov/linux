@@ -5,6 +5,8 @@
 #include <linux/hashtable.h>
 #include <linux/sched/coredump.h> /* MMF_VM_HUGEPAGE */
 
+#define MY_HASH_TABLE_LOG_SIZE 25
+
 #define RESERV_ORDER           3 
 #define RESERV_SHIFT           (RESERV_ORDER + PAGE_SHIFT) // 3 + 12 = 15
 #define RESERV_SIZE            ((1UL) << RESERV_SHIFT)     // 00000000000000001000000000000000 //32768 
@@ -56,7 +58,8 @@ struct thp_reservation {
 struct thp_resvs {
 	atomic_t refcnt;
 	spinlock_t res_hash_lock;
-	DECLARE_HASHTABLE(res_hash, 22);
+  bool initialized;
+	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
 };
 
 #define	vma_thp_reservations(vma)	((vma)->thp_reservations)
@@ -94,8 +97,10 @@ static inline void thp_resvs_put(struct thp_resvs *r)
 //    hash_for_each(r->res_hash, bkt, res, node) {
 //      khugepaged_free_reservation(res);
 //    }
-    hash_for_each_safe(r->res_hash, i, tmp, res, node) {
-      khugepaged_free_reservation(res);
+    if (r->initialized) {
+      hash_for_each_safe(r->res_hash, i, tmp, res, node) {
+        khugepaged_free_reservation(res);
+      }
     }
     __thp_resvs_put(r);
   }

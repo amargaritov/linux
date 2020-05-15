@@ -98,7 +98,8 @@ void thp_resvs_new(struct vm_area_struct *vma)
 
 	atomic_set(&new->refcnt, 1);
 	spin_lock_init(&new->res_hash_lock);
-	hash_init(new->res_hash);
+  new->initialized = false;
+//	hash_init(new->res_hash);
 
 done:
 	vma->thp_reservations = new;
@@ -111,6 +112,15 @@ void __thp_resvs_put(struct thp_resvs *resv)
 
 //	kfree(resv);
 	vfree(resv);
+}
+
+void khugepaged_init_ht(struct thp_resvs *resv) {
+	spin_lock(&resv->res_hash_lock);
+  if (!resv->initialized) {
+    hash_init(resv->res_hash);
+    resv->initialized = true;
+  }
+	spin_unlock(&resv->res_hash_lock);
 }
 
 static struct thp_reservation *khugepaged_find_reservation(
@@ -184,7 +194,14 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	if ((haddr < vma->vm_start) || (haddr + RESERV_SIZE > vma->vm_end)) //Artemiy changed 
 		return;
 
+  khugepaged_init_ht(vma->thp_reservations);
+
 	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
 
   	// Check if this page is already reserved 
 	if (khugepaged_find_reservation(vma, address)) {
@@ -217,7 +234,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		set_page_count(page + i, 1);
 
 //	res = kzalloc(sizeof(*res), GFP_KERNEL); //Artemiy change to prevent blocking and fix the deadlock on bfs/pgr
-	res = kzalloc(sizeof(*res), GFP_KERNEL & ~__GFP_DIRECT_RECLAIM);
+	res = kmalloc(sizeof(*res), GFP_KERNEL & ~__GFP_DIRECT_RECLAIM);
 	if (!res) {
 		// Was not able to allocate memory for auxilary kernel structure thp_reservation
 		count_vm_event(THP_RES_ALLOC_FAILED);
@@ -258,6 +275,11 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
 
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return NULL;
+  }
+
 	page = NULL;
 	res = khugepaged_find_reservation(vma, address);
 	if (res) {
@@ -291,6 +313,11 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
 
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
+
 	res = khugepaged_find_reservation(vma, address);
 	if (!res)
 		goto out;
@@ -320,6 +347,11 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
 
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
+
 	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
@@ -340,8 +372,12 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 	bool free_res = false;
 	int i;
 
+  return;
+
 	if (!src->thp_reservations)
 		return;
+
+  printk("Executing __khugepaged_move_reservations: split_addr=%d, dst_is_below=%d", split_addr, dst_is_below);
 
 	if (!dst->thp_reservations)
 		free_res = true;
@@ -360,16 +396,20 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 		if ((split_addr & ~RESERV_MASK) && //Artemiy changed
 		    (hstart == (split_addr & RESERV_MASK))) { //Artemiy changed
 			khugepaged_free_reservation(res);
+      printk("Executing __khugepaged_move_reservations: pass 1");
 			continue;
 		} else if (dst_is_below) {
 			if (hstart >= split_addr)
+        printk("Executing __khugepaged_move_reservations: pass 2");
 				continue;
 		} else if (hstart < split_addr) {
+      printk("Executing __khugepaged_move_reservations: pass 3");
 			continue;
 		}
 
 		if (unlikely(free_res)) {
 			khugepaged_free_reservation(res);
+      printk("Executing __khugepaged_move_reservations: pass 4");
 			continue;
 		}
 
@@ -377,6 +417,7 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 		res->vma = dst;
 		res->lock = &dst->thp_reservations->res_hash_lock;
 		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
+    printk("Executing __khugepaged_move_reservations: copying");
 	}
 
 	if (!free_res)
@@ -438,7 +479,16 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 		take_rmap_locks(vma);
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
 	spin_lock(&new_vma->thp_reservations->res_hash_lock);
+  if (!new_vma->thp_reservations->initialized) {
+    spin_unlock(&new_vma->thp_reservations->res_hash_lock);
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
 
 	/*
 	 * If the start or end addresses of the range are not huge page
@@ -544,6 +594,10 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 		return;
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
+  if (!vma->thp_reservations->initialized) {
+    spin_unlock(&vma->thp_reservations->res_hash_lock);
+		return;
+  }
 
 	res = khugepaged_find_reservation(vma, address);
 	if (res) {
