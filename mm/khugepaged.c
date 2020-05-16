@@ -115,12 +115,12 @@ void __thp_resvs_put(struct thp_resvs *resv)
 }
 
 void khugepaged_init_ht(struct thp_resvs *resv) {
-	spin_lock(&resv->res_hash_lock);
+//	spin_lock(&resv->res_hash_lock);
   if (!resv->initialized) {
     hash_init(resv->res_hash);
     resv->initialized = true;
   }
-	spin_unlock(&resv->res_hash_lock);
+//	spin_unlock(&resv->res_hash_lock);
 }
 
 static struct thp_reservation *khugepaged_find_reservation(
@@ -194,9 +194,10 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	if ((haddr < vma->vm_start) || (haddr + RESERV_SIZE > vma->vm_end)) //Artemiy changed 
 		return;
 
-  khugepaged_init_ht(vma->thp_reservations);
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
+
+  khugepaged_init_ht(vma->thp_reservations);
 
   if (!vma->thp_reservations->initialized) {
     spin_unlock(&vma->thp_reservations->res_hash_lock);
@@ -221,7 +222,11 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
   // replace alloc_hugepage_vma with alloc_pages_vma
   //#define alloc_hugepage_vma(gfp_mask, vma, addr, order)  \
   //  alloc_pages_vma(gfp_mask, order, vma, addr, numa_node_id(), true)
-	gfp = GFP_HIGHUSER_MOVABLE & __GFP_ZERO;
+  //
+//  #define GFP_TRANSHUGE_LIGHT ((GFP_HIGHUSER_MOVABLE | __GFP_COMP | \
+//       __GFP_NOMEMALLOC | __GFP_NOWARN) & ~__GFP_RECLAIM)
+	gfp = ((GFP_HIGHUSER | __GFP_NOMEMALLOC | __GFP_NOWARN) & ~__GFP_RECLAIM);
+
 	page = alloc_pages_vma(gfp, RESERV_ORDER, vma, haddr, numa_node_id(), false); //Artemiy changed
 
 	if (unlikely(!page)) {
