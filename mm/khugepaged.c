@@ -97,7 +97,9 @@ void thp_resvs_new(struct vm_area_struct *vma)
 		goto done;
 
 	atomic_set(&new->refcnt, 1);
-	spin_lock_init(&new->res_hash_lock);
+//	spin_lock_init(&new->res_hash_lock);
+	rwlock_init(&new->res_hash_lock);
+ // new->res_hash_lock = __RW_LOCK_UNLOCKED(xxx_lock);
   new->initialized = false;
 //	hash_init(new->res_hash);
 
@@ -202,18 +204,18 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		return;
 
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	write_lock(&vma->thp_reservations->res_hash_lock);
 
   khugepaged_init_ht(vma->thp_reservations);
 
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
 
   	// Check if this page is already reserved 
 	if (khugepaged_find_reservation(vma, address)) {
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		write_unlock(&vma->thp_reservations->res_hash_lock);
 		// Already reserved 
 		return;
 	}
@@ -238,7 +240,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	if (unlikely(!page)) {
 		count_vm_event(THP_RES_ALLOC_FAILED);
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
 	}
 
@@ -251,7 +253,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		// Was not able to allocate memory for auxilary kernel structure thp_reservation
 		count_vm_event(THP_RES_ALLOC_FAILED);
 		__free_pages(page, RESERV_ORDER); //Artemiy changed
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+		write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
 	}
 
@@ -269,7 +271,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	res->nr_unused = RESERV_NR; //Artemiy changed
 	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, RESERV_NR); //Artemiy changed
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	write_unlock(&vma->thp_reservations->res_hash_lock);
 
 //	khugepaged_enter(vma, vma->vm_flags); //Artemiy changed
 }
@@ -285,10 +287,10 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 	if (!vma->thp_reservations)
 		return NULL;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	read_lock(&vma->thp_reservations->res_hash_lock);
 
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    read_unlock(&vma->thp_reservations->res_hash_lock);
 		return NULL;
   }
 
@@ -302,15 +304,14 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 		page = res->page + region_offset;
 		get_page(page);
 
-		list_lru_del(&thp_reservations_lru, &res->lru);
-		list_lru_add(&thp_reservations_lru, &res->lru);
+//		list_lru_del(&thp_reservations_lru, &res->lru);
+//		list_lru_add(&thp_reservations_lru, &res->lru);
 
 		dec_node_page_state(res->page, NR_THP_RESERVED);
-
     SET_BIT(res->used_mask, region_offset);
 	}
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	read_unlock(&vma->thp_reservations->res_hash_lock);
 
 	return page;
 }
@@ -323,10 +324,10 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 	if (!vma->thp_reservations)
 		return;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	write_lock(&vma->thp_reservations->res_hash_lock);
 
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
 
@@ -337,7 +338,7 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 	khugepaged_free_reservation(res);
 
 out:
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	write_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 /*
@@ -357,10 +358,10 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 	eaddr = addr + len;
 	addr &= RESERV_MASK; //Artemiy changed  
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	write_lock(&vma->thp_reservations->res_hash_lock);
 
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
 
@@ -371,7 +372,7 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 			khugepaged_free_reservation(res);
 	}
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	write_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy changed
@@ -394,9 +395,9 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 	if (!dst->thp_reservations)
 		free_res = true;
 
-	spin_lock(&src->thp_reservations->res_hash_lock);
+	write_lock(&src->thp_reservations->res_hash_lock);
 	if (!free_res)
-		spin_lock(&dst->thp_reservations->res_hash_lock);
+		write_lock(&dst->thp_reservations->res_hash_lock);
 
 	hash_for_each_safe(src->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
@@ -433,8 +434,8 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 	}
 
 	if (!free_res)
-		spin_unlock(&dst->thp_reservations->res_hash_lock);
-	spin_unlock(&src->thp_reservations->res_hash_lock);
+		write_unlock(&dst->thp_reservations->res_hash_lock);
+	write_unlock(&src->thp_reservations->res_hash_lock);
 }
 
 /*
@@ -490,15 +491,15 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 	if (need_rmap_locks)
 		take_rmap_locks(vma);
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	write_lock(&vma->thp_reservations->res_hash_lock);
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
-	spin_lock(&new_vma->thp_reservations->res_hash_lock);
+	write_lock(&new_vma->thp_reservations->res_hash_lock);
   if (!new_vma->thp_reservations->initialized) {
-    spin_unlock(&new_vma->thp_reservations->res_hash_lock);
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    write_unlock(&new_vma->thp_reservations->res_hash_lock);
+    write_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
 
@@ -534,8 +535,8 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 		hash_add(new_vma->thp_reservations->wrapper->res_hash, &res->node, res->haddr);
 	}
 
-	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	write_unlock(&new_vma->thp_reservations->res_hash_lock);
+	write_unlock(&vma->thp_reservations->res_hash_lock);
 
 	if (need_rmap_locks)
 		drop_rmap_locks(vma);
@@ -605,11 +606,14 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 	if (!vma->thp_reservations)
 		return;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+	read_lock(&vma->thp_reservations->res_hash_lock);
   if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
+    read_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
+  read_unlock(&vma->thp_reservations->res_hash_lock);
+
+	write_lock(&vma->thp_reservations->res_hash_lock);
 
 	res = khugepaged_find_reservation(vma, address);
 	if (res) {
@@ -618,7 +622,7 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 			res->nr_unused += delta;
 	}
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	write_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 /**
@@ -917,7 +921,7 @@ enum lru_status thp_lru_free_reservation(struct list_head *item,
 	int unused;
 	int i;
 
-	if (!spin_trylock(res->lock))
+	if (!write_trylock(res->lock))
 		goto err_get_res_lock_failed;
 
 	mm = res->vma->vm_mm;
@@ -934,7 +938,7 @@ enum lru_status thp_lru_free_reservation(struct list_head *item,
 	up_write(&mm->mmap_sem);
 	mmput(mm);
 
-	spin_unlock(res->lock);
+	write_unlock(res->lock);
 
 	page = res->page;
 	unused = res->nr_unused;
@@ -955,7 +959,7 @@ enum lru_status thp_lru_free_reservation(struct list_head *item,
 err_down_write_mmap_sem_failed:
 	mmput_async(mm);
 err_mmget:
-	spin_unlock(res->lock);
+	write_unlock(res->lock);
 err_get_res_lock_failed:
 	return LRU_SKIP;
 }

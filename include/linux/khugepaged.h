@@ -45,7 +45,8 @@ extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma,
 	 (1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG))
 
 struct thp_reservation {
-	spinlock_t *lock;
+//	spinlock_t *lock;
+	rwlock_t *lock;
 	unsigned long haddr;
 	struct page *page;
 	struct vm_area_struct *vma;
@@ -61,7 +62,8 @@ struct my_struct {
 
 struct thp_resvs {
 	atomic_t refcnt;
-	spinlock_t res_hash_lock;
+//	spinlock_t res_hash_lock;
+	rwlock_t res_hash_lock;
   bool initialized;
   struct my_struct* wrapper; 
 };
