@@ -55,11 +55,15 @@ struct thp_reservation {
   unsigned char used_mask; //Artemiy added to indicate which pages are used (others are reserved)
 };
 
+struct my_struct {
+	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
+};
+
 struct thp_resvs {
 	atomic_t refcnt;
 	spinlock_t res_hash_lock;
   bool initialized;
-	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
+  struct my_struct* wrapper; 
 };
 
 #define	vma_thp_reservations(vma)	((vma)->thp_reservations)
@@ -98,9 +102,10 @@ static inline void thp_resvs_put(struct thp_resvs *r)
 //      khugepaged_free_reservation(res);
 //    }
     if (r->initialized) {
-      hash_for_each_safe(r->res_hash, i, tmp, res, node) {
+      hash_for_each_safe(r->wrapper->res_hash, i, tmp, res, node) {
         khugepaged_free_reservation(res);
       }
+      vfree(r->wrapper);
     }
     __thp_resvs_put(r);
   }

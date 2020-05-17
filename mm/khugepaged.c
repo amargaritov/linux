@@ -92,7 +92,7 @@ void thp_resvs_new(struct vm_area_struct *vma)
 		goto done;
 
 //	new = kzalloc(sizeof(struct thp_resvs), GFP_KERNEL);
-	new = vmalloc(sizeof(struct thp_resvs));
+	new = kmalloc(sizeof(struct thp_resvs), GFP_KERNEL);
 	if (!new)
 		goto done;
 
@@ -109,15 +109,22 @@ void __thp_resvs_put(struct thp_resvs *resv)
 {
 	if (!atomic_dec_and_test(&resv->refcnt))
 		return;
+  
+//	vfree(resv);
 
-//	kfree(resv);
-	vfree(resv);
+	kfree(resv);
 }
 
 void khugepaged_init_ht(struct thp_resvs *resv) {
 //	spin_lock(&resv->res_hash_lock);
   if (!resv->initialized) {
-    hash_init(resv->res_hash);
+    struct my_struct* new;
+    new = vmalloc(sizeof(struct my_struct));
+    if (!new)
+      return;
+
+    resv->wrapper = new;
+    hash_init(resv->wrapper->res_hash);
     resv->initialized = true;
   }
 //	spin_unlock(&resv->res_hash_lock);
@@ -142,7 +149,7 @@ static struct thp_reservation *khugepaged_find_reservation(
  * @member: the name of the hlist_node within the struct
  * @key: the key of the objects to iterate over
  */
-	hash_for_each_possible(vma->thp_reservations->res_hash, res, node, haddr) {
+	hash_for_each_possible(vma->thp_reservations->wrapper->res_hash, res, node, haddr) {
 		if (res->haddr == haddr) {
 			break;
     }
@@ -254,7 +261,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	res->page = page; // first page in the reservation
 	res->vma = vma;   // vma it belonges to
 	res->lock = &vma->thp_reservations->res_hash_lock; //lock of table of reservations in the vma
-	hash_add(vma->thp_reservations->res_hash, &res->node, haddr);
+	hash_add(vma->thp_reservations->wrapper->res_hash, &res->node, haddr);
 
 	INIT_LIST_HEAD(&res->lru);
 	list_lru_add(&thp_reservations_lru, &res->lru);
@@ -357,7 +364,7 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 		return;
   }
 
-	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(vma->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
 		if (hstart >= addr && hstart < eaddr)
@@ -391,7 +398,7 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 	if (!free_res)
 		spin_lock(&dst->thp_reservations->res_hash_lock);
 
-	hash_for_each_safe(src->thp_reservations->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(src->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
 		/*
@@ -421,7 +428,7 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 		hash_del(&res->node);
 		res->vma = dst;
 		res->lock = &dst->thp_reservations->res_hash_lock;
-		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
+		hash_add(dst->thp_reservations->wrapper->res_hash, &res->node, res->haddr);
     printk("Executing __khugepaged_move_reservations: copying");
 	}
 
@@ -514,7 +521,7 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 
 	offset = new_addr - old_addr;
 
-	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(vma->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
 		if (hstart < old_addr || hstart >= eaddr)
@@ -524,7 +531,7 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 		res->lock = &new_vma->thp_reservations->res_hash_lock;
 		res->vma = new_vma;
 		res->haddr += offset;
-		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
+		hash_add(new_vma->thp_reservations->wrapper->res_hash, &res->node, res->haddr);
 	}
 
 	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
