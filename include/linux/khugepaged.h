@@ -6,6 +6,7 @@
 #include <linux/sched/coredump.h> /* MMF_VM_HUGEPAGE */
 
 #define MY_HASH_TABLE_LOG_SIZE 25
+#define MY_HASH_TABLE_SIZE     (1 << MY_HASH_TABLE_LOG_SIZE)
 
 #define RESERV_ORDER           3 
 #define RESERV_SHIFT           (RESERV_ORDER + PAGE_SHIFT) // 3 + 12 = 15
@@ -58,6 +59,7 @@ struct thp_reservation {
 
 struct my_struct {
 	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
+  spinlock_t bucket_hash_locks[MY_HASH_TABLE_SIZE];
 };
 
 struct thp_resvs {
