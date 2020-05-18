@@ -13,6 +13,8 @@
 #include <linux/hash.h>
 #include <linux/rculist.h>
 
+#define LOCK_LOG_GROUPING_SHIFT 12
+
 #define DEFINE_HASHTABLE(name, bits)						\
 	struct hlist_head name[1 << (bits)] =					\
 			{ [0 ... ((1 << (bits)) - 1)] = HLIST_HEAD_INIT }
@@ -40,7 +42,7 @@ static inline void __hash_init(struct hlist_head *ht, unsigned int sz)
 }
 
 // Artemiy get bucket number
-#define hash_index(hashtable, key) hash_min(key, HASH_BITS(hashtable))
+#define hash_index(hashtable, key) ( (hash_min(key, HASH_BITS(hashtable))) >> LOCK_LOG_GROUPING_SHIFT )
 
 /**
  * hash_init - initialize a hash table

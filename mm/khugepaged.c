@@ -117,15 +117,22 @@ void __thp_resvs_put(struct thp_resvs *resv)
 	kfree(resv);
 }
 
+// when we enter this function, the lock is read_locked
 void khugepaged_init_ht(struct thp_resvs *resv) {
-//	spin_lock(&resv->res_hash_lock);
+begin:
   if (!resv->initialized) {
     struct my_struct* new;
     int i;
+    read_unlock(&resv->res_hash_lock);
+    if (!write_trylock(&resv->res_hash_lock)) {
+      read_lock(&resv->res_hash_lock);
+      goto begin;
+      }
+//    write_lock(&resv->res_hash_lock);
 
     new = vmalloc(sizeof(struct my_struct));
     if (!new)
-      return;
+      goto done;
 
     resv->wrapper = new;
     hash_init(resv->wrapper->res_hash);
@@ -133,8 +140,13 @@ void khugepaged_init_ht(struct thp_resvs *resv) {
       spin_lock_init(&(resv->wrapper->bucket_hash_locks[i]));
     }
     resv->initialized = true;
+    goto done;
   }
-//	spin_unlock(&resv->res_hash_lock);
+  return;
+    
+done:
+    write_unlock(&resv->res_hash_lock);
+//    read_lock(&resv->res_hash_lock);
 }
 
 static struct thp_reservation *khugepaged_find_reservation(
@@ -198,6 +210,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	struct page *page;
 	gfp_t gfp;
 	int i;
+  int hash_bucket;
 
 	// Check if thp_resvs exist
 	if (!vma->thp_reservations)
@@ -209,18 +222,18 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		return;
 
 
-	write_lock(&vma->thp_reservations->res_hash_lock);
+	read_lock(&vma->thp_reservations->res_hash_lock);
 
   khugepaged_init_ht(vma->thp_reservations);
 
   if (!vma->thp_reservations->initialized) {
-    write_unlock(&vma->thp_reservations->res_hash_lock);
+    read_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
 
   	// Check if this page is already reserved 
 	if (khugepaged_find_reservation(vma, address)) {
-		write_unlock(&vma->thp_reservations->res_hash_lock);
+		read_unlock(&vma->thp_reservations->res_hash_lock);
 		// Already reserved 
 		return;
 	}
@@ -245,9 +258,12 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	if (unlikely(!page)) {
 		count_vm_event(THP_RES_ALLOC_FAILED);
-		write_unlock(&vma->thp_reservations->res_hash_lock);
+		read_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
 	}
+
+  hash_bucket = hash_index(vma->thp_reservations->wrapper->res_hash, haddr);
+  spin_lock(&(vma->thp_reservations->wrapper->bucket_hash_locks[hash_bucket]));
 
 	for (i = 0; i < RESERV_NR; i++) //Artemiy changed
 		set_page_count(page + i, 1);
@@ -258,7 +274,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		// Was not able to allocate memory for auxilary kernel structure thp_reservation
 		count_vm_event(THP_RES_ALLOC_FAILED);
 		__free_pages(page, RESERV_ORDER); //Artemiy changed
-		write_unlock(&vma->thp_reservations->res_hash_lock);
+		read_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
 	}
 
@@ -276,8 +292,9 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	res->nr_unused = RESERV_NR; //Artemiy changed
 	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, RESERV_NR); //Artemiy changed
 
-	write_unlock(&vma->thp_reservations->res_hash_lock);
+  spin_unlock(&(vma->thp_reservations->wrapper->bucket_hash_locks[hash_bucket]));
 
+	read_unlock(&vma->thp_reservations->res_hash_lock);
 //	khugepaged_enter(vma, vma->vm_flags); //Artemiy changed
 }
 
@@ -332,16 +349,21 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 				    unsigned long address)
 {
 	struct thp_reservation *res;
+  int hash_bucket;
+	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
 
 	if (!vma->thp_reservations)
 		return;
 
-	write_lock(&vma->thp_reservations->res_hash_lock);
+	read_lock(&vma->thp_reservations->res_hash_lock);
 
   if (!vma->thp_reservations->initialized) {
-    write_unlock(&vma->thp_reservations->res_hash_lock);
+    read_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
   }
+
+  hash_bucket = hash_index(vma->thp_reservations->wrapper->res_hash, haddr);
+  spin_lock(&(vma->thp_reservations->wrapper->bucket_hash_locks[hash_bucket]));
 
 	res = khugepaged_find_reservation(vma, address);
 	if (!res)
@@ -350,7 +372,8 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 	khugepaged_free_reservation(res);
 
 out:
-	write_unlock(&vma->thp_reservations->res_hash_lock);
+  spin_unlock(&(vma->thp_reservations->wrapper->bucket_hash_locks[hash_bucket]));
+	read_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 /*

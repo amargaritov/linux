@@ -6,7 +6,7 @@
 #include <linux/sched/coredump.h> /* MMF_VM_HUGEPAGE */
 
 #define MY_HASH_TABLE_LOG_SIZE 25
-#define MY_HASH_TABLE_SIZE     (1 << MY_HASH_TABLE_LOG_SIZE)
+#define MY_HASH_TABLE_SIZE     (1 << (MY_HASH_TABLE_LOG_SIZE - LOCK_LOG_GROUPING_SHIFT))
 
 #define RESERV_ORDER           3 
 #define RESERV_SHIFT           (RESERV_ORDER + PAGE_SHIFT) // 3 + 12 = 15
