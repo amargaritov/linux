@@ -164,7 +164,7 @@ void khugepaged_free_reservation(struct thp_reservation *res)
 	int i;
   char mask;
 
-	list_lru_del(&thp_reservations_lru, &res->lru);
+//	list_lru_del(&thp_reservations_lru, &res->lru);
 	hash_del(&res->node);
 	page = res->page;
 	unused = res->nr_unused;
@@ -264,7 +264,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	hash_add(vma->thp_reservations->wrapper->res_hash, &res->node, haddr);
 
 	INIT_LIST_HEAD(&res->lru);
-	list_lru_add(&thp_reservations_lru, &res->lru);
+//	list_lru_add(&thp_reservations_lru, &res->lru);
 
 	res->nr_unused = RESERV_NR; //Artemiy changed
 	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, RESERV_NR); //Artemiy changed
@@ -302,8 +302,8 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 		page = res->page + region_offset;
 		get_page(page);
 
-		list_lru_del(&thp_reservations_lru, &res->lru);
-		list_lru_add(&thp_reservations_lru, &res->lru);
+//		list_lru_del(&thp_reservations_lru, &res->lru);
+//		list_lru_add(&thp_reservations_lru, &res->lru);
 
 		dec_node_page_state(res->page, NR_THP_RESERVED);
 
