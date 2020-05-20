@@ -171,13 +171,21 @@ void khugepaged_free_reservation(struct thp_reservation *res)
 	struct page *page;
 	int unused;
 	int i;
-  char mask;
+  unsigned char mask;
+  unsigned char mask2;
 
 //	list_lru_del(&thp_reservations_lru, &res->lru);
 	hash_del(&res->node);
 	page = res->page;
-	unused = res->nr_unused;
+//	unused = res->nr_unused;
   mask = res->used_mask;
+
+	unused = 0;
+  mask2 = res->used_mask;
+  while (mask2) {
+        unused += mask2 & 1;
+        mask2 = (mask2 >> 1);
+  }
 
 	kfree(res);
 
@@ -304,7 +312,7 @@ struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma, unsigned
   dec_node_page_state(res->page, NR_THP_RESERVED);
 
   SET_BIT(res->used_mask, region_offset);
-	res->nr_unused = RESERV_NR - 1; //Artemiy changed
+//	res->nr_unused = RESERV_NR - 1; //Artemiy changed
 
   spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
@@ -443,55 +451,55 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 
   return;
 
-	if (!src->thp_reservations)
-		return;
-
-  printk("Executing __khugepaged_move_reservations: split_addr=%d, dst_is_below=%d", split_addr, dst_is_below);
-
-	if (!dst->thp_reservations)
-		free_res = true;
-
-	spin_lock(&src->thp_reservations->res_hash_lock);
-	if (!free_res)
-		spin_lock(&dst->thp_reservations->res_hash_lock);
-
-	hash_for_each_safe(src->thp_reservations->res_hash, i, tmp, res, node) {
-		unsigned long hstart = res->haddr;
-
-		/*
-		 * Free the reservation if it straddles a non-aligned
-		 * split address.
-		 */
-		if ((split_addr & ~RESERV_MASK) && //Artemiy changed
-		    (hstart == (split_addr & RESERV_MASK))) { //Artemiy changed
-			khugepaged_free_reservation(res);
-      printk("Executing __khugepaged_move_reservations: pass 1");
-			continue;
-		} else if (dst_is_below) {
-			if (hstart >= split_addr)
-        printk("Executing __khugepaged_move_reservations: pass 2");
-				continue;
-		} else if (hstart < split_addr) {
-      printk("Executing __khugepaged_move_reservations: pass 3");
-			continue;
-		}
-
-		if (unlikely(free_res)) {
-			khugepaged_free_reservation(res);
-      printk("Executing __khugepaged_move_reservations: pass 4");
-			continue;
-		}
-
-		hash_del(&res->node);
-//		res->vma = dst;
-//		res->lock = &dst->thp_reservations->res_hash_lock;
-		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
-    printk("Executing __khugepaged_move_reservations: copying");
-	}
-
-	if (!free_res)
-		spin_unlock(&dst->thp_reservations->res_hash_lock);
-	spin_unlock(&src->thp_reservations->res_hash_lock);
+//	if (!src->thp_reservations)
+//		return;
+//
+//  printk("Executing __khugepaged_move_reservations: split_addr=%d, dst_is_below=%d", split_addr, dst_is_below);
+//
+//	if (!dst->thp_reservations)
+//		free_res = true;
+//
+//	spin_lock(&src->thp_reservations->res_hash_lock);
+//	if (!free_res)
+//		spin_lock(&dst->thp_reservations->res_hash_lock);
+//
+//	hash_for_each_safe(src->thp_reservations->res_hash, i, tmp, res, node) {
+//		unsigned long hstart = res->haddr;
+//
+//		/*
+//		 * Free the reservation if it straddles a non-aligned
+//		 * split address.
+//		 */
+//		if ((split_addr & ~RESERV_MASK) && //Artemiy changed
+//		    (hstart == (split_addr & RESERV_MASK))) { //Artemiy changed
+//			khugepaged_free_reservation(res);
+//      printk("Executing __khugepaged_move_reservations: pass 1");
+//			continue;
+//		} else if (dst_is_below) {
+//			if (hstart >= split_addr)
+//        printk("Executing __khugepaged_move_reservations: pass 2");
+//				continue;
+//		} else if (hstart < split_addr) {
+//      printk("Executing __khugepaged_move_reservations: pass 3");
+//			continue;
+//		}
+//
+//		if (unlikely(free_res)) {
+//			khugepaged_free_reservation(res);
+//      printk("Executing __khugepaged_move_reservations: pass 4");
+//			continue;
+//		}
+//
+//		hash_del(&res->node);
+////		res->vma = dst;
+////		res->lock = &dst->thp_reservations->res_hash_lock;
+//		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
+//    printk("Executing __khugepaged_move_reservations: copying");
+//	}
+//
+//	if (!free_res)
+//		spin_unlock(&dst->thp_reservations->res_hash_lock);
+//	spin_unlock(&src->thp_reservations->res_hash_lock);
 }
 
 /*
@@ -524,81 +532,81 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 
   return;
 
-	struct thp_reservation *res;
-	unsigned long eaddr, offset;
-	struct hlist_node *tmp;
-	int i;
-
-	if (!vma->thp_reservations)
-		return;
-
-	if (!new_vma->thp_reservations) {
-		__khugepaged_release_reservations(vma, old_addr, len);
-		return;
-	}
-
-	/*
-	 * Release all reservations if they will no longer be aligned
-	 * in the new address range.
-	 */
-	if ((new_addr & ~RESERV_MASK) != (old_addr & ~RESERV_MASK)) { //Artemiy changed
-		__khugepaged_release_reservations(vma, old_addr, len);
-		return;
-	}
-
-	if (need_rmap_locks)
-		take_rmap_locks(vma);
-
-	spin_lock(&vma->thp_reservations->res_hash_lock);
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
-	spin_lock(&new_vma->thp_reservations->res_hash_lock);
-  if (!new_vma->thp_reservations->initialized) {
-    spin_unlock(&new_vma->thp_reservations->res_hash_lock);
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
-
-	/*
-	 * If the start or end addresses of the range are not huge page
-	 * aligned, check for overlapping reservations and release them.
-	 */
-	if (old_addr & ~RESERV_MASK) { //Artemiy changed
-		res = khugepaged_find_reservation(vma, old_addr);
-		if (res)
-			khugepaged_free_reservation(res);
-	}
-
-	eaddr = old_addr + len;
-	if (eaddr & ~RESERV_MASK) { //Artemiy changed
-		res = khugepaged_find_reservation(vma, eaddr);
-		if (res)
-			khugepaged_free_reservation(res);
-	}
-
-	offset = new_addr - old_addr;
-
-	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
-		unsigned long hstart = res->haddr;
-
-		if (hstart < old_addr || hstart >= eaddr)
-			continue;
-
-		hash_del(&res->node);
-//		res->lock = &new_vma->thp_reservations->res_hash_lock;
-//		res->vma = new_vma;
-		res->haddr += offset;
-		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
-	}
-
-	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
-
-	if (need_rmap_locks)
-		drop_rmap_locks(vma);
-
+//	struct thp_reservation *res;
+//	unsigned long eaddr, offset;
+//	struct hlist_node *tmp;
+//	int i;
+//
+//	if (!vma->thp_reservations)
+//		return;
+//
+//	if (!new_vma->thp_reservations) {
+//		__khugepaged_release_reservations(vma, old_addr, len);
+//		return;
+//	}
+//
+//	/*
+//	 * Release all reservations if they will no longer be aligned
+//	 * in the new address range.
+//	 */
+//	if ((new_addr & ~RESERV_MASK) != (old_addr & ~RESERV_MASK)) { //Artemiy changed
+//		__khugepaged_release_reservations(vma, old_addr, len);
+//		return;
+//	}
+//
+//	if (need_rmap_locks)
+//		take_rmap_locks(vma);
+//
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
+//	spin_lock(&new_vma->thp_reservations->res_hash_lock);
+//  if (!new_vma->thp_reservations->initialized) {
+//    spin_unlock(&new_vma->thp_reservations->res_hash_lock);
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
+//
+//	/*
+//	 * If the start or end addresses of the range are not huge page
+//	 * aligned, check for overlapping reservations and release them.
+//	 */
+//	if (old_addr & ~RESERV_MASK) { //Artemiy changed
+//		res = khugepaged_find_reservation(vma, old_addr);
+//		if (res)
+//			khugepaged_free_reservation(res);
+//	}
+//
+//	eaddr = old_addr + len;
+//	if (eaddr & ~RESERV_MASK) { //Artemiy changed
+//		res = khugepaged_find_reservation(vma, eaddr);
+//		if (res)
+//			khugepaged_free_reservation(res);
+//	}
+//
+//	offset = new_addr - old_addr;
+//
+//	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
+//		unsigned long hstart = res->haddr;
+//
+//		if (hstart < old_addr || hstart >= eaddr)
+//			continue;
+//
+//		hash_del(&res->node);
+////		res->lock = &new_vma->thp_reservations->res_hash_lock;
+////		res->vma = new_vma;
+//		res->haddr += offset;
+//		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
+//	}
+//
+//	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
+//	spin_unlock(&vma->thp_reservations->res_hash_lock);
+//
+//	if (need_rmap_locks)
+//		drop_rmap_locks(vma);
+//
 }
 
 /*
@@ -659,30 +667,30 @@ void _khugepaged_move_reservations_adj(struct vm_area_struct *prev,
 void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 				unsigned long address, int delta)
 {
-	struct thp_reservation *res;
-	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
-  int hash_bucket = 0;
-  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
-
-	if (!vma->thp_reservations)
-		return;
-
-//	spin_lock(&vma->thp_reservations->res_hash_lock);
-//  if (!vma->thp_reservations->initialized) {
-//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//	struct thp_reservation *res;
+//	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
+//  int hash_bucket = 0;
+//  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
+//
+//	if (!vma->thp_reservations)
 //		return;
-//  }
-
-  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
-
-	res = khugepaged_find_reservation(vma, address);
-	if (res) {
-		WARN_ON((res->nr_unused == 0) || (res->nr_unused + delta < 0));
-		if (res->nr_unused + delta >= 0)
-			res->nr_unused += delta;
-	}
-  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
-
+//
+////	spin_lock(&vma->thp_reservations->res_hash_lock);
+////  if (!vma->thp_reservations->initialized) {
+////    spin_unlock(&vma->thp_reservations->res_hash_lock);
+////		return;
+////  }
+//
+//  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+//
+//	res = khugepaged_find_reservation(vma, address);
+//	if (res) {
+//		WARN_ON((res->nr_unused == 0) || (res->nr_unused + delta < 0));
+//		if (res->nr_unused + delta >= 0)
+//			res->nr_unused += delta;
+//	}
+//  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+//
 //	spin_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
@@ -1843,7 +1851,8 @@ static void collapse_huge_page(struct mm_struct *mm,
 		 * XXX highly unlikely that the check in khugepage_scan_pmd()
 		 * would pass and this one would fail.
 		 */
-		pgs_inuse = HPAGE_PMD_NR - res->nr_unused;
+//		pgs_inuse = HPAGE_PMD_NR - res->nr_unused;
+		pgs_inuse = 0;
 		if (pgs_inuse < hugepage_promotion_threshold) {
 			result = SCAN_PAGE_COUNT;
 			goto out_up_write;

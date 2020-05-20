@@ -2639,9 +2639,12 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	}
 	return page_copied ? VM_FAULT_WRITE : 0;
 oom_free_new:
-	if (!pg_from_reservation) {
+//	if (!pg_from_reservation) {
 		put_page(new_page);
-	}
+//	if (pg_from_reservation) {
+//	//set back
+//	//inc counter
+//	}
 oom:
 	if (old_page)
 		put_page(old_page);

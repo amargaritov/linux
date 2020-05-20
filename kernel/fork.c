@@ -988,12 +988,12 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
   }
   if (new) {
     atomic_set(&new->refcnt, 1);
-    spin_lock_init(&new->res_hash_lock);
+//    spin_lock_init(&new->res_hash_lock);
     hash_init(new->res_hash);
     for (i = 0; i < MY_HASH_TABLE_SIZE; i++) {
       spin_lock_init(&(new->bucket_hash_locks[i]));
     }
-    new->initialized = true;
+//    new->initialized = true;
   }
   mm->thp_reservations = new;
 

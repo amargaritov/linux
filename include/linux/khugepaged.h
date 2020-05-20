@@ -6,7 +6,9 @@
 #include <linux/sched/coredump.h> /* MMF_VM_HUGEPAGE */
 
 #define MY_HASH_TABLE_LOG_SIZE 25
-#define MY_HASH_TABLE_SIZE     (1 << MY_HASH_TABLE_LOG_SIZE) 
+#define SPIN_LOCK_LOG_SHIFT    10
+//#define MY_HASH_TABLE_SIZE     (1 << (MY_HASH_TABLE_LOG_SIZE - SPIN_LOCK_LOG_SHIFT)) 
+#define MY_HASH_TABLE_SIZE     (1 << (MY_HASH_TABLE_LOG_SIZE)) 
 
 #define RESERV_ORDER           3 
 #define RESERV_SHIFT           (RESERV_ORDER + PAGE_SHIFT) // 3 + 12 = 15
@@ -19,6 +21,9 @@
 #define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
 #define SET_BIT(var,pos)   ((var) &= (1<<(pos)))
 
+// Artemiy get bucket number
+//#define hash_index(hashtable, key) (hash_min(key, HASH_BITS(hashtable)) >> SPIN_LOCK_LOG_SHIFT)
+#define hash_index(hashtable, key) (hash_min(key, HASH_BITS(hashtable)) >> 10)
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 extern struct attribute_group khugepaged_attr_group;
@@ -46,25 +51,16 @@ extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma,
 	 (1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG))
 
 struct thp_reservation {
-//	spinlock_t *lock;
 	unsigned long haddr;
 	struct page *page;
-//	struct vm_area_struct *vma;
 	struct hlist_node node;
 //	struct list_head lru;
-	unsigned char nr_unused;
   unsigned char used_mask; //Artemiy added to indicate which pages are used (others are reserved)
-};
-
-struct my_struct {
-	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
 };
 
 struct thp_resvs {
 	atomic_t refcnt;
-	spinlock_t res_hash_lock;
-  bool initialized;
-//  struct my_struct* wrapper; 
+//	spinlock_t res_hash_lock;
 	spinlock_t bucket_hash_locks[MY_HASH_TABLE_SIZE];
 	DECLARE_HASHTABLE(res_hash, MY_HASH_TABLE_LOG_SIZE);
 };
@@ -104,7 +100,7 @@ static inline void thp_resvs_put(struct thp_resvs *r)
 //    hash_for_each(r->res_hash, bkt, res, node) {
 //      khugepaged_free_reservation(res);
 //    }
-    if (r->initialized) {
+      if (r) {
       hash_for_each_safe(r->res_hash, i, tmp, res, node) {
         khugepaged_free_reservation(res);
       }
