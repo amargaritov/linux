@@ -2502,20 +2502,19 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
+  my_app = (mm->owner->pid == 5555);
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
-    my_app = (mm->owner->pid == 5555);
     if (my_app) {
       printk("Executing wp_page_copy->khugepaged_get_reserved_page");
     }
 		new_page = khugepaged_get_reserved_page(vma, vmf->address);
 		if (!new_page) {
-			new_page = alloc_zeroed_user_highpage_movable(vma,
-							      vmf->address);
+      new_page = alloc_zeroed_user_highpage_movable(vma,
+                    vmf->address);
 		} else {
       clear_user_highpage(new_page, vmf->address);
       pg_from_reservation = true;
 		}
-
 		if (!new_page)
 			goto oom;
 	} else {
@@ -2523,6 +2522,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		 * XXX If there's a THP reservation, for now just
 		 * release it since they're not shared on fork.
 		 */
+    if (my_app) {
+      printk("Executing wp_page_copy->copy_user_page");
+    }
 		khugepaged_release_reservation(vma, vmf->address);
 		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
 				vmf->address);
@@ -3208,29 +3210,19 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 //  }
 
   if (my_app) {
-    page = khugepaged_get_reserved_page(vma, vmf->address);
+    page = khugepaged_get_or_reserve_page(vma, vmf->address);
   } else {
     page = NULL;
   }
 	if (!page) {
-		// Try to reserve pages
-    if (my_app) {
-		khugepaged_reserve(vma, vmf->address); //Artemiy changed
-		page = khugepaged_get_reserved_page(vma, vmf->address);
-    }
-		if (!page) {
-			// Allocate one page
-			page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
-			if (!page)
-				goto oom;
-		} else { // if found a previously reserved page
-			clear_user_highpage(page, vmf->address);
-			pg_from_reservation = true;
-		}
-	} else { // if found a previously reserved page
-		clear_user_highpage(page, vmf->address);
-		pg_from_reservation = true;
-	}
+    // Allocate one page
+    page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+    if (!page)
+      goto oom;
+  } else { // if found a previously reserved page
+    clear_user_highpage(page, vmf->address);
+    pg_from_reservation = true;
+  }
 
 	if (mem_cgroup_try_charge_delay(page, vma->vm_mm, GFP_KERNEL, &memcg,
 					false))
@@ -3264,9 +3256,9 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		return handle_userfault(vmf, VM_UFFD_MISSING);
 	}
 
-	if (pg_from_reservation)
-		// Decrement the number of unused pages in the reservation
-		khugepaged_mod_resv_unused(vma, vmf->address, -1);
+//	if (pg_from_reservation)
+//		// Decrement the number of unused pages in the reservation
+//		khugepaged_mod_resv_unused(vma, vmf->address, -1);
 
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 	page_add_new_anon_rmap(page, vma, vmf->address, false);
@@ -3282,14 +3274,24 @@ unlock:
 	return ret;
 release:
 	mem_cgroup_cancel_charge(page, memcg, false);
-	if (!pg_from_reservation) { //Artemiy changed
+//	if (!pg_from_reservation) { //Artemiy changed
+// set bit back
+// inc nr_unused 
+  if (my_app) {
+    printk("%s", "Executing memory.c put_page!!!");
+  }
 		put_page(page);
-	}
+//	}
 	goto unlock;
 oom_free_page:
-	if (!pg_from_reservation) { //Artemiy changed
+//	if (!pg_from_reservation) { //Artemiy changed
+// set bit back
+// inc nr_unused 
+  if (my_app) {
+    printk("%s", "Executing memory.c put_page!!!");
+  }
 		put_page(page);
-	}
+//	}
 oom:
 	return VM_FAULT_OOM;
 }

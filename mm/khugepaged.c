@@ -193,42 +193,53 @@ void khugepaged_free_reservation(struct thp_reservation *res)
 	}
 }
 
-void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
+struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma, unsigned long address)
 {
-	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
+	unsigned long haddr;
 	struct thp_reservation *res;
 	struct page *page;
 	gfp_t gfp;
 	int i;
   int hash_bucket = 0;
+  unsigned char region_offset;
+  unsigned long offset;
 
 	// Check if thp_resvs exist
 	if (!vma->thp_reservations)
-		return;
+		return NULL;
 	if (!vma_is_anonymous(vma))
-		return;
+		return NULL;
+
+  haddr = address & RESERV_MASK;
 	// Check if region will lie in the vma boundaries
 	if ((haddr < vma->vm_start) || (haddr + RESERV_SIZE > vma->vm_end)) //Artemiy changed 
-		return;
+		return NULL;
 
+  offset = address & (~RESERV_MASK);
 
-//	spin_lock(&vma->thp_reservations->res_hash_lock);
   hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
   spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
-//  khugepaged_init_ht(vma->thp_reservations);
-
-//  if (!vma->thp_reservations->initialized) {
-//    spin_unlock(&vma->thp_reservations->res_hash_lock);
-//		return;
-//  }
-
-  	// Check if this page is already reserved 
-	if (khugepaged_find_reservation(vma, address)) {
-    spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
-		//spin_unlock(&vma->thp_reservations->res_hash_lock);
+  // Check if this page is already reserved 
+	res = khugepaged_find_reservation(vma, address);
+	if (res) {
 		// Already reserved 
-		return;
+    //~RESERV_MASK is 00000000000000000111111111111111
+
+    region_offset = offset >> PAGE_SHIFT; //PAGE_SHIFT is 12
+		page = res->page + region_offset;
+		get_page(page);
+
+//		list_lru_del(&thp_reservations_lru, &res->lru);
+//		list_lru_add(&thp_reservations_lru, &res->lru);
+
+		dec_node_page_state(res->page, NR_THP_RESERVED);
+
+    SET_BIT(res->used_mask, region_offset);
+
+    spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+
+    return page;
 	}
 
 	/*
@@ -251,13 +262,9 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	if (unlikely(!page)) {
 		count_vm_event(THP_RES_ALLOC_FAILED);
-//		spin_unlock(&vma->thp_reservations->res_hash_lock);
     spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
-		return;
+		return NULL;
 	}
-
-	for (i = 0; i < RESERV_NR; i++) //Artemiy changed
-		set_page_count(page + i, 1);
 
 //	res = kzalloc(sizeof(*res), GFP_KERNEL); //Artemiy change to prevent blocking and fix the deadlock on bfs/pgr
 	res = kmalloc(sizeof(*res), GFP_KERNEL & ~__GFP_DIRECT_RECLAIM);
@@ -266,11 +273,13 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		count_vm_event(THP_RES_ALLOC_FAILED);
 		__free_pages(page, RESERV_ORDER); //Artemiy changed
     spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
-//		spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
+		return NULL;
 	}
 
 	count_vm_event(THP_RES_ALLOC);
+
+	for (i = 0; i < RESERV_NR; i++) //Artemiy changed
+		set_page_count(page + i, 1);
 
 	res->haddr = haddr; // address of the beggining of the allocation
 	res->page = page; // first page in the reservation
@@ -281,11 +290,26 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 //	INIT_LIST_HEAD(&res->lru);
 //	list_lru_add(&thp_reservations_lru, &res->lru);
 
-	res->nr_unused = RESERV_NR; //Artemiy changed
+//	res->nr_unused = RESERV_NR; //Artemiy changed
 	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, RESERV_NR); //Artemiy changed
 
-	//spin_unlock(&vma->thp_reservations->res_hash_lock);
+//----------------------------------------------------------
+  region_offset = offset >> PAGE_SHIFT; //PAGE_SHIFT is 12
+  page = res->page + region_offset;
+  get_page(page);
+
+//		list_lru_del(&thp_reservations_lru, &res->lru);
+//		list_lru_add(&thp_reservations_lru, &res->lru);
+
+  dec_node_page_state(res->page, NR_THP_RESERVED);
+
+  SET_BIT(res->used_mask, region_offset);
+	res->nr_unused = RESERV_NR - 1; //Artemiy changed
+
   spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+
+  return page;
+//--------------------------------------------------------
 
 //	khugepaged_enter(vma, vma->vm_flags); //Artemiy changed
 }

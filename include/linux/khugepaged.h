@@ -121,7 +121,7 @@ struct page *khugepaged_get_reserved_page(
 	struct vm_area_struct *vma,
 	unsigned long address);
 
-void khugepaged_reserve(struct vm_area_struct *vma,
+struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma,
 			unsigned long address);
 
 void khugepaged_release_reservation(struct vm_area_struct *vma,
@@ -196,7 +196,7 @@ static inline struct page *khugepaged_get_reserved_page(
 	return NULL;
 }
 
-static inline void khugepaged_reserve(struct vm_area_struct *vma,
+static inline struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma,
 			       unsigned long address)
 {
 }
