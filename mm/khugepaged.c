@@ -274,11 +274,11 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	res->haddr = haddr; // address of the beggining of the allocation
 	res->page = page; // first page in the reservation
-	res->vma = vma;   // vma it belonges to
-	res->lock = &vma->thp_reservations->res_hash_lock; //lock of table of reservations in the vma
+//	res->vma = vma;   // vma it belonges to
+//	res->lock = &vma->thp_reservations->res_hash_lock; //lock of table of reservations in the vma
 	hash_add(vma->thp_reservations->res_hash, &res->node, haddr);
 
-	INIT_LIST_HEAD(&res->lru);
+//	INIT_LIST_HEAD(&res->lru);
 //	list_lru_add(&thp_reservations_lru, &res->lru);
 
 	res->nr_unused = RESERV_NR; //Artemiy changed
@@ -459,8 +459,8 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 		}
 
 		hash_del(&res->node);
-		res->vma = dst;
-		res->lock = &dst->thp_reservations->res_hash_lock;
+//		res->vma = dst;
+//		res->lock = &dst->thp_reservations->res_hash_lock;
 		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
     printk("Executing __khugepaged_move_reservations: copying");
 	}
@@ -563,8 +563,8 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 			continue;
 
 		hash_del(&res->node);
-		res->lock = &new_vma->thp_reservations->res_hash_lock;
-		res->vma = new_vma;
+//		res->lock = &new_vma->thp_reservations->res_hash_lock;
+//		res->vma = new_vma;
 		res->haddr += offset;
 		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
 	}
@@ -649,7 +649,6 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 //		return;
 //  }
 
-  
   spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
 	res = khugepaged_find_reservation(vma, address);
@@ -951,55 +950,61 @@ enum lru_status thp_lru_free_reservation(struct list_head *item,
 					 spinlock_t *lock,
 					 void *cb_arg)
 {
-	struct mm_struct *mm = NULL;
-	struct thp_reservation *res = container_of(item,
-						   struct thp_reservation,
-						   lru);
-	struct page *page;
-	int unused;
-	int i;
-
-	if (!spin_trylock(res->lock))
-		goto err_get_res_lock_failed;
-
-	mm = res->vma->vm_mm;
-	if (!mmget_not_zero(mm))
-		goto err_mmget;
-	if (!down_write_trylock(&mm->mmap_sem))
-		goto err_down_write_mmap_sem_failed;
-
-	list_lru_isolate(lru, item);
-	spin_unlock(lock);
-
-	hash_del(&res->node);
-
-	up_write(&mm->mmap_sem);
-	mmput(mm);
-
-	spin_unlock(res->lock);
-
-	page = res->page;
-	unused = res->nr_unused;
-
-	for (i = 0; i < RESERV_NR; i++) //Artemiy changed 
-    if ((CHECK_BIT(res->used_mask, i) == 0))
-      put_page(page + i);
-
-	kfree(res);
-
-	if (unused)
-		mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, -unused);
-
-	spin_lock(lock);
-
 	return LRU_REMOVED_RETRY;
 
-err_down_write_mmap_sem_failed:
-	mmput_async(mm);
-err_mmget:
-	spin_unlock(res->lock);
-err_get_res_lock_failed:
-	return LRU_SKIP;
+//	struct mm_struct *mm = NULL;
+//	struct thp_reservation *res = container_of(item,
+//						   struct thp_reservation,
+//						   lru);
+//	struct page *page;
+//	int unused;
+//	int i;
+//  int hash_bucket = 0;
+//
+//  hash_bucket = hash_index(vma->thp_reservations->res_hash, res->haddr);
+//
+//	if (!spin_trylock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]))
+//		goto err_get_res_lock_failed;
+//
+//	mm = res->vma->vm_mm;
+//	if (!mmget_not_zero(mm))
+//		goto err_mmget;
+//	if (!down_write_trylock(&mm->mmap_sem))
+//		goto err_down_write_mmap_sem_failed;
+//
+//	list_lru_isolate(lru, item);
+//	spin_unlock(lock);
+//
+//	hash_del(&res->node);
+//
+//	up_write(&mm->mmap_sem);
+//	mmput(mm);
+//
+////	spin_unlock(res->lock);
+//  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+//
+//	page = res->page;
+//	unused = res->nr_unused;
+//
+//	for (i = 0; i < RESERV_NR; i++) //Artemiy changed 
+//    if ((CHECK_BIT(res->used_mask, i) == 0))
+//      put_page(page + i);
+//
+//	kfree(res);
+//
+//	if (unused)
+//		mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, -unused);
+//
+//	spin_lock(lock);
+//
+//	return LRU_REMOVED_RETRY;
+//
+//err_down_write_mmap_sem_failed:
+//	mmput_async(mm);
+//err_mmget:
+//	spin_unlock(res->lock);
+//err_get_res_lock_failed:
+//	return LRU_SKIP;
 }
 
 static unsigned long

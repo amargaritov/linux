@@ -46,13 +46,13 @@ extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma,
 	 (1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG))
 
 struct thp_reservation {
-	spinlock_t *lock;
+//	spinlock_t *lock;
 	unsigned long haddr;
 	struct page *page;
-	struct vm_area_struct *vma;
+//	struct vm_area_struct *vma;
 	struct hlist_node node;
-	struct list_head lru;
-	int nr_unused;
+//	struct list_head lru;
+	unsigned char nr_unused;
   unsigned char used_mask; //Artemiy added to indicate which pages are used (others are reserved)
 };
 
