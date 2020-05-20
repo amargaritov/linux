@@ -636,6 +636,8 @@ void __mmdrop(struct mm_struct *mm)
 	mmu_notifier_mm_destroy(mm);
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
+  if (mm->thp_reservations)
+    thp_resvs_put(mm->thp_reservations);
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -927,6 +929,9 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	struct user_namespace *user_ns)
 {
+  bool my_app;
+  struct thp_resvs* new;
+
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
@@ -969,6 +974,29 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		goto fail_nocontext;
 
 	mm->user_ns = get_user_ns(user_ns);
+
+
+// Artemiy
+  my_app = (mm->owner->pid == 5555);
+  if (my_app) {
+    printk("Executing mm_init");
+  }
+
+  mm->thp_reservations = NULL;
+  if (my_app) {
+    new = vmalloc(sizeof(struct thp_resvs));
+  }
+  if (new) {
+    atomic_set(&new->refcnt, 1);
+    spin_lock_init(&new->res_hash_lock);
+    hash_init(new->res_hash);
+    for (i = 0; i < MY_HASH_TABLE_SIZE; i++) {
+      spin_lock_init(&(new->bucket_hash_locks[i]));
+    }
+    new->initialized = true;
+    mm->thp_reservations = new;
+  }
+
 	return mm;
 
 fail_nocontext:

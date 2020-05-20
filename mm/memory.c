@@ -3198,9 +3198,9 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 //  }
 
   if (my_app) {
-	page = khugepaged_get_reserved_page(vma, vmf->address);
+    page = khugepaged_get_reserved_page(vma, vmf->address);
   } else {
-  page = NULL;
+    page = NULL;
   }
 	if (!page) {
 		// Try to reserve pages

@@ -494,6 +494,9 @@ struct mm_struct {
 		/* HMM needs to track a few things per mm */
 		struct hmm *hmm;
 #endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	struct thp_resvs *thp_reservations;
+#endif
 	} __randomize_layout;
 
 	/*

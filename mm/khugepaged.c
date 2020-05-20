@@ -82,27 +82,31 @@ struct list_lru thp_reservations_lru;
 
 void thp_resvs_new(struct vm_area_struct *vma)
 {
-	struct thp_resvs *new = NULL;
+	struct thp_resvs *new = vma->vm_mm->thp_reservations;
+  if (new) {
+    atomic_inc(&new->refcount);
+  }
+  vma->thp_reservations = new;
 
-  bool my_app = (vma->vm_mm->owner->pid == 5555);
-  if (!my_app)
-    goto done;
-
-	if (hugepage_promotion_threshold == 1)
-		goto done;
+//  bool my_app = (vma->vm_mm->owner->pid == 5555);
+//  if (!my_app)
+//    goto done;
+//
+//	if (hugepage_promotion_threshold == 1)
+//		goto done;
 
 //	new = kzalloc(sizeof(struct thp_resvs), GFP_KERNEL);
-	new = kmalloc(sizeof(struct thp_resvs), GFP_KERNEL);
-	if (!new)
-		goto done;
-
-	atomic_set(&new->refcnt, 1);
-	spin_lock_init(&new->res_hash_lock);
-  new->initialized = false;
+//	new = kmalloc(sizeof(struct thp_resvs), GFP_KERNEL);
+//	if (!new)
+//		goto done;
+//
+//	atomic_set(&new->refcnt, 1);
+//	spin_lock_init(&new->res_hash_lock);
+//  new->initialized = false;
 //	hash_init(new->res_hash);
-
-done:
-	vma->thp_reservations = new;
+//
+//done:
+//	vma->thp_reservations = new;
 }
 
 void __thp_resvs_put(struct thp_resvs *resv)
@@ -204,7 +208,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	spin_lock(&vma->thp_reservations->res_hash_lock);
 
-  khugepaged_init_ht(vma->thp_reservations);
+//  khugepaged_init_ht(vma->thp_reservations);
 
   if (!vma->thp_reservations->initialized) {
     spin_unlock(&vma->thp_reservations->res_hash_lock);
