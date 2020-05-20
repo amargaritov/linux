@@ -38,6 +38,8 @@ static inline void __hash_init(struct hlist_head *ht, unsigned int sz)
 	for (i = 0; i < sz; i++)
 		INIT_HLIST_HEAD(&ht[i]);
 }
+// Artemiy get bucket number
+#define hash_index(hashtable, key) ( hash_min(key, HASH_BITS(hashtable)) >> 10)
 
 /**
  * hash_init - initialize a hash table

@@ -564,7 +564,6 @@ fail_uprobe_end:
 fail_nomem_anon_vma_fork:
 	mpol_put(vma_policy(tmp));
 fail_nomem_policy:
-	thp_resvs_put(vma_thp_reservations(tmp));
 	vm_area_free(tmp);
 fail_nomem:
 	retval = -ENOMEM;
@@ -931,6 +930,7 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 {
   bool my_app;
   struct thp_resvs* new;
+  int i;
 
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
@@ -982,7 +982,7 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
     printk("Executing mm_init");
   }
 
-  mm->thp_reservations = NULL;
+  new = NULL;
   if (my_app) {
     new = vmalloc(sizeof(struct thp_resvs));
   }
@@ -994,8 +994,8 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
       spin_lock_init(&(new->bucket_hash_locks[i]));
     }
     new->initialized = true;
-    mm->thp_reservations = new;
   }
+  mm->thp_reservations = new;
 
 	return mm;
 

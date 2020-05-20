@@ -82,11 +82,16 @@ struct list_lru thp_reservations_lru;
 
 void thp_resvs_new(struct vm_area_struct *vma)
 {
-	struct thp_resvs *new = vma->vm_mm->thp_reservations;
-  if (new) {
-    atomic_inc(&new->refcount);
-  }
-  vma->thp_reservations = new;
+	struct thp_resvs *new = NULL;
+  bool my_app = (vma->vm_mm->owner->pid == 5555);
+  if (!my_app)
+    goto done;
+//
+	new = vma->vm_mm->thp_reservations;
+//  if (new) {
+//    atomic_inc(&new->refcnt);
+//  }
+//  vma->thp_reservations = new;
 
 //  bool my_app = (vma->vm_mm->owner->pid == 5555);
 //  if (!my_app)
@@ -105,8 +110,8 @@ void thp_resvs_new(struct vm_area_struct *vma)
 //  new->initialized = false;
 //	hash_init(new->res_hash);
 //
-//done:
-//	vma->thp_reservations = new;
+done:
+	vma->thp_reservations = new;
 }
 
 void __thp_resvs_put(struct thp_resvs *resv)
@@ -114,23 +119,23 @@ void __thp_resvs_put(struct thp_resvs *resv)
 	if (!atomic_dec_and_test(&resv->refcnt))
 		return;
   
-//	vfree(resv);
+	vfree(resv);
 
-	kfree(resv);
+//	kfree(resv);
 }
 
 void khugepaged_init_ht(struct thp_resvs *resv) {
 //	spin_lock(&resv->res_hash_lock);
-  if (!resv->initialized) {
-    struct my_struct* new;
-    new = vmalloc(sizeof(struct my_struct));
-    if (!new)
-      return;
-
-    resv->wrapper = new;
-    hash_init(resv->wrapper->res_hash);
-    resv->initialized = true;
-  }
+//  if (!resv->initialized) {
+//    struct my_struct* new;
+//    new = vmalloc(sizeof(struct my_struct));
+//    if (!new)
+//      return;
+//
+//    //resv->wrapper = new;
+//    hash_init(resv->res_hash);
+//    resv->initialized = true;
+//  }
 //	spin_unlock(&resv->res_hash_lock);
 }
 
@@ -153,7 +158,7 @@ static struct thp_reservation *khugepaged_find_reservation(
  * @member: the name of the hlist_node within the struct
  * @key: the key of the objects to iterate over
  */
-	hash_for_each_possible(vma->thp_reservations->wrapper->res_hash, res, node, haddr) {
+	hash_for_each_possible(vma->thp_reservations->res_hash, res, node, haddr) {
 		if (res->haddr == haddr) {
 			break;
     }
@@ -195,6 +200,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	struct page *page;
 	gfp_t gfp;
 	int i;
+  int hash_bucket = 0;
 
 	// Check if thp_resvs exist
 	if (!vma->thp_reservations)
@@ -206,18 +212,21 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		return;
 
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
+  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
+  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
 //  khugepaged_init_ht(vma->thp_reservations);
 
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
 
   	// Check if this page is already reserved 
 	if (khugepaged_find_reservation(vma, address)) {
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+    spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+		//spin_unlock(&vma->thp_reservations->res_hash_lock);
 		// Already reserved 
 		return;
 	}
@@ -242,7 +251,8 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 
 	if (unlikely(!page)) {
 		count_vm_event(THP_RES_ALLOC_FAILED);
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		spin_unlock(&vma->thp_reservations->res_hash_lock);
+    spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 		return;
 	}
 
@@ -255,7 +265,8 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 		// Was not able to allocate memory for auxilary kernel structure thp_reservation
 		count_vm_event(THP_RES_ALLOC_FAILED);
 		__free_pages(page, RESERV_ORDER); //Artemiy changed
-		spin_unlock(&vma->thp_reservations->res_hash_lock);
+    spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+//		spin_unlock(&vma->thp_reservations->res_hash_lock);
 		return;
 	}
 
@@ -265,7 +276,7 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	res->page = page; // first page in the reservation
 	res->vma = vma;   // vma it belonges to
 	res->lock = &vma->thp_reservations->res_hash_lock; //lock of table of reservations in the vma
-	hash_add(vma->thp_reservations->wrapper->res_hash, &res->node, haddr);
+	hash_add(vma->thp_reservations->res_hash, &res->node, haddr);
 
 	INIT_LIST_HEAD(&res->lru);
 //	list_lru_add(&thp_reservations_lru, &res->lru);
@@ -273,7 +284,8 @@ void khugepaged_reserve(struct vm_area_struct *vma, unsigned long address)
 	res->nr_unused = RESERV_NR; //Artemiy changed
 	mod_node_page_state(page_pgdat(page), NR_THP_RESERVED, RESERV_NR); //Artemiy changed
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+	//spin_unlock(&vma->thp_reservations->res_hash_lock);
+  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
 //	khugepaged_enter(vma, vma->vm_flags); //Artemiy changed
 }
@@ -283,18 +295,24 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
 {
 	struct thp_reservation *res;
 	struct page *page;
+  int hash_bucket = 0;
+	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
+
+
+  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
 
 //	if (!transparent_hugepage_enabled(vma)) //Artemiy changed 
 //		return NULL;
 	if (!vma->thp_reservations)
 		return NULL;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
+  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return NULL;
-  }
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return NULL;
+//  }
 
 	page = NULL;
 	res = khugepaged_find_reservation(vma, address);
@@ -314,7 +332,8 @@ struct page *khugepaged_get_reserved_page(struct vm_area_struct *vma,
     SET_BIT(res->used_mask, region_offset);
 	}
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+//	spin_unlock(&vma->thp_reservations->res_hash_lock);
+  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
 	return page;
 }
@@ -323,16 +342,20 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 				    unsigned long address)
 {
 	struct thp_reservation *res;
+  int hash_bucket = 0;
+	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
+  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
 
 	if (!vma->thp_reservations)
 		return;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
+  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
 
 	res = khugepaged_find_reservation(vma, address);
 	if (!res)
@@ -341,7 +364,8 @@ void khugepaged_release_reservation(struct vm_area_struct *vma,
 	khugepaged_free_reservation(res);
 
 out:
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+//	spin_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 /*
@@ -354,6 +378,7 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 	struct hlist_node *tmp;
 	unsigned long eaddr;
 	int i;
+  int hash_bucket = 0;
 
 	if (!vma->thp_reservations)
 		return;
@@ -361,21 +386,25 @@ void __khugepaged_release_reservations(struct vm_area_struct *vma,
 	eaddr = addr + len;
 	addr &= RESERV_MASK; //Artemiy changed  
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
 
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
 
-	hash_for_each_safe(vma->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
-		if (hstart >= addr && hstart < eaddr)
+		if (hstart >= addr && hstart < eaddr) {
+      hash_bucket = hash_index(vma->thp_reservations->res_hash, hstart);
+      spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 			khugepaged_free_reservation(res);
+      spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+    }
 	}
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+//	spin_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy changed
@@ -402,7 +431,7 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 	if (!free_res)
 		spin_lock(&dst->thp_reservations->res_hash_lock);
 
-	hash_for_each_safe(src->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(src->thp_reservations->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
 		/*
@@ -432,7 +461,7 @@ static void __khugepaged_move_reservations(struct vm_area_struct *src, //Artemiy
 		hash_del(&res->node);
 		res->vma = dst;
 		res->lock = &dst->thp_reservations->res_hash_lock;
-		hash_add(dst->thp_reservations->wrapper->res_hash, &res->node, res->haddr);
+		hash_add(dst->thp_reservations->res_hash, &res->node, res->haddr);
     printk("Executing __khugepaged_move_reservations: copying");
 	}
 
@@ -468,6 +497,8 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 		unsigned long new_addr, unsigned long len,
 		bool need_rmap_locks)
 {
+
+  return;
 
 	struct thp_reservation *res;
 	unsigned long eaddr, offset;
@@ -525,7 +556,7 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 
 	offset = new_addr - old_addr;
 
-	hash_for_each_safe(vma->thp_reservations->wrapper->res_hash, i, tmp, res, node) {
+	hash_for_each_safe(vma->thp_reservations->res_hash, i, tmp, res, node) {
 		unsigned long hstart = res->haddr;
 
 		if (hstart < old_addr || hstart >= eaddr)
@@ -535,7 +566,7 @@ void thp_reservations_mremap(struct vm_area_struct *vma,
 		res->lock = &new_vma->thp_reservations->res_hash_lock;
 		res->vma = new_vma;
 		res->haddr += offset;
-		hash_add(new_vma->thp_reservations->wrapper->res_hash, &res->node, res->haddr);
+		hash_add(new_vma->thp_reservations->res_hash, &res->node, res->haddr);
 	}
 
 	spin_unlock(&new_vma->thp_reservations->res_hash_lock);
@@ -605,15 +636,21 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 				unsigned long address, int delta)
 {
 	struct thp_reservation *res;
+	unsigned long haddr = address & RESERV_MASK; //Artemiy changed 
+  int hash_bucket = 0;
+  hash_bucket = hash_index(vma->thp_reservations->res_hash, haddr);
 
 	if (!vma->thp_reservations)
 		return;
 
-	spin_lock(&vma->thp_reservations->res_hash_lock);
-  if (!vma->thp_reservations->initialized) {
-    spin_unlock(&vma->thp_reservations->res_hash_lock);
-		return;
-  }
+//	spin_lock(&vma->thp_reservations->res_hash_lock);
+//  if (!vma->thp_reservations->initialized) {
+//    spin_unlock(&vma->thp_reservations->res_hash_lock);
+//		return;
+//  }
+
+  
+  spin_lock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
 	res = khugepaged_find_reservation(vma, address);
 	if (res) {
@@ -621,8 +658,9 @@ void khugepaged_mod_resv_unused(struct vm_area_struct *vma,
 		if (res->nr_unused + delta >= 0)
 			res->nr_unused += delta;
 	}
+  spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
 
-	spin_unlock(&vma->thp_reservations->res_hash_lock);
+//	spin_unlock(&vma->thp_reservations->res_hash_lock);
 }
 
 /**

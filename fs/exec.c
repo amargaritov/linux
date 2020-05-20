@@ -327,7 +327,6 @@ err:
 	up_write(&mm->mmap_sem);
 err_free:
 	bprm->vma = NULL;
-  thp_resvs_put(vma_thp_reservations(vma));
 	vm_area_free(vma);
 	return err;
 }

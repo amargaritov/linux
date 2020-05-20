@@ -2497,11 +2497,16 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	const unsigned long mmun_end = mmun_start + PAGE_SIZE;
 	struct mem_cgroup *memcg;
 	bool pg_from_reservation = false;
+  bool my_app;
 
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
+    my_app = (mm->owner->pid == 5555);
+    if (my_app) {
+      printk("Executing wp_page_copy->khugepaged_get_reserved_page");
+    }
 		new_page = khugepaged_get_reserved_page(vma, vmf->address);
 		if (!new_page) {
 			new_page = alloc_zeroed_user_highpage_movable(vma,
@@ -2593,8 +2598,13 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			page_remove_rmap(old_page, false);
 		}
 
-		if (pg_from_reservation)
+		if (pg_from_reservation) {
+      my_app = (mm->owner->pid == 5555);
+      if (my_app) {
+        printk("Executing wp_page_copy->khugepaged_mod_resv_unused");
+      }
 			khugepaged_mod_resv_unused(vma, vmf->address, -1);
+    }
 
 		/* Free the old page.. */
 		new_page = old_page;
