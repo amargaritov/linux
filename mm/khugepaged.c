@@ -186,6 +186,7 @@ void khugepaged_free_reservation(struct thp_reservation *res)
         unused += mask2 & 1;
         mask2 = (mask2 >> 1);
   }
+  unused = 8 - unused;
 
 	kfree(res);
 
@@ -236,6 +237,13 @@ struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma, unsigned
 
     region_offset = offset >> PAGE_SHIFT; //PAGE_SHIFT is 12
 		page = res->page + region_offset;
+
+    // already taken by some thread
+    if ((CHECK_BIT(res->used_mask, region_offset) > 0)) {
+      spin_unlock(&(vma->thp_reservations->bucket_hash_locks[hash_bucket]));
+      return NULL;
+    }
+
 		get_page(page);
 
 //		list_lru_del(&thp_reservations_lru, &res->lru);
@@ -291,6 +299,7 @@ struct page* khugepaged_get_or_reserve_page(struct vm_area_struct *vma, unsigned
 
 	res->haddr = haddr; // address of the beggining of the allocation
 	res->page = page; // first page in the reservation
+  res->used_mask = 0;
 //	res->vma = vma;   // vma it belonges to
 //	res->lock = &vma->thp_reservations->res_hash_lock; //lock of table of reservations in the vma
 	hash_add(vma->thp_reservations->res_hash, &res->node, haddr);

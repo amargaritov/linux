@@ -635,8 +635,11 @@ void __mmdrop(struct mm_struct *mm)
 	mmu_notifier_mm_destroy(mm);
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
-  if (mm->thp_reservations)
+  if (mm->thp_reservations) {
+    printk("Executing __mmdrop->thp_resvs_put");
     thp_resvs_put(mm->thp_reservations);
+    mm->thp_reservations = NULL;
+  }
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -988,8 +991,8 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
   }
   if (new) {
     atomic_set(&new->refcnt, 1);
-//    spin_lock_init(&new->res_hash_lock);
-    hash_init(new->res_hash);
+    hash_init(new->res_hash);  
+    spin_lock_init(&mm->res_hash_lock);
     for (i = 0; i < MY_HASH_TABLE_SIZE; i++) {
       spin_lock_init(&(new->bucket_hash_locks[i]));
     }
@@ -1025,10 +1028,20 @@ static inline void __mmput(struct mm_struct *mm)
 {
 	VM_BUG_ON(atomic_read(&mm->mm_users));
 
+//  spin_lock(&mm->res_hash_lock);
+//  if (mm->thp_reservations) {
+//    printk("Executing __mmput->thp_resvs_put");
+//    thp_resvs_put(mm->thp_reservations);
+//    mm->thp_reservations = NULL;
+//  }
+//  spin_unlock(&mm->res_hash_lock);
+
+
 	uprobe_clear_state(mm);
 	exit_aio(mm);
 	ksm_exit(mm);
 	khugepaged_exit(mm); /* must run before exit_mmap */
+
 	exit_mmap(mm);
 	mm_put_huge_zero_page(mm);
 	set_mm_exe_file(mm, NULL);

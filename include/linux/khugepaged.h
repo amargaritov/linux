@@ -18,7 +18,7 @@
 #define RESERV_GROUP_NR_IN_PMD (HPAGE_PMD_NR / RESERV_NR)  // 512 / 8 = 64
 #define RESERV_OFFSET_MASK     ((1UL << RESERV_ORDER) - 1) // 00000000000000000000000000000111 //7
 
-#define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
+#define CHECK_BIT(var,pos) ((var) &  (1<<(pos)))
 #define SET_BIT(var,pos)   ((var) &= (1<<(pos)))
 
 // Artemiy get bucket number

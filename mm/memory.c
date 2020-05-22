@@ -2504,11 +2504,15 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 
   my_app = (mm->owner->pid == 5555);
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
-    if (my_app) {
-      printk("Executing wp_page_copy->khugepaged_get_reserved_page");
-    }
-		new_page = khugepaged_get_reserved_page(vma, vmf->address);
+//    if (my_app) {
+//      printk("Executing wp_page_copy->khugepaged_get_reserved_page");
+//    }
+//		new_page = khugepaged_get_reserved_page(vma, vmf->address);
+		new_page = khugepaged_get_or_reserve_page(vma, vmf->address);
 		if (!new_page) {
+      if (my_app) {
+        printk("Executing wp_page_copy->alloc_zeroed");
+      }
       new_page = alloc_zeroed_user_highpage_movable(vma,
                     vmf->address);
 		} else {
@@ -2525,9 +2529,12 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
     if (my_app) {
       printk("Executing wp_page_copy->copy_user_page");
     }
-		khugepaged_release_reservation(vma, vmf->address);
-		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
-				vmf->address);
+//		khugepaged_release_reservation(vma, vmf->address);
+		new_page = khugepaged_get_or_reserve_page(vma, vmf->address);
+		if (!new_page) {
+      new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
+          vmf->address);
+    }
 		if (!new_page)
 			goto oom;
 		cow_user_page(new_page, old_page, vmf->address, vma);
@@ -2600,13 +2607,13 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			page_remove_rmap(old_page, false);
 		}
 
-		if (pg_from_reservation) {
-      my_app = (mm->owner->pid == 5555);
-      if (my_app) {
-        printk("Executing wp_page_copy->khugepaged_mod_resv_unused");
-      }
-			khugepaged_mod_resv_unused(vma, vmf->address, -1);
-    }
+//		if (pg_from_reservation) {
+//      my_app = (mm->owner->pid == 5555);
+//      if (my_app) {
+//        printk("Executing wp_page_copy->khugepaged_mod_resv_unused");
+//      }
+//			khugepaged_mod_resv_unused(vma, vmf->address, -1);
+//    }
 
 		/* Free the old page.. */
 		new_page = old_page;
@@ -2639,12 +2646,12 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	}
 	return page_copied ? VM_FAULT_WRITE : 0;
 oom_free_new:
-//	if (!pg_from_reservation) {
+	if (!pg_from_reservation) {
 		put_page(new_page);
 //	if (pg_from_reservation) {
 //	//set back
 //	//inc counter
-//	}
+	}
 oom:
 	if (old_page)
 		put_page(old_page);
@@ -2979,8 +2986,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		if (si->flags & SWP_SYNCHRONOUS_IO &&
 				__swap_count(si, entry) == 1) {
 			/* skip swapcache */
-			page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
-							vmf->address);
+      page = khugepaged_get_or_reserve_page(vma, vmf->address);
+      if (!page) {
+        page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
+                vmf->address);
+      }
 			if (page) {
 				__SetPageLocked(page);
 				__SetPageSwapBacked(page);
@@ -3277,24 +3287,24 @@ unlock:
 	return ret;
 release:
 	mem_cgroup_cancel_charge(page, memcg, false);
-//	if (!pg_from_reservation) { //Artemiy changed
+	if (!pg_from_reservation) { //Artemiy changed
 // set bit back
 // inc nr_unused 
-  if (my_app) {
-    printk("%s", "Executing memory.c put_page!!!");
-  }
+    if (my_app) {
+      printk("%s", "Executing memory.c put_page!!!");
+    }
 		put_page(page);
-//	}
+	}
 	goto unlock;
 oom_free_page:
-//	if (!pg_from_reservation) { //Artemiy changed
+	if (!pg_from_reservation) { //Artemiy changed
 // set bit back
 // inc nr_unused 
-  if (my_app) {
-    printk("%s", "Executing memory.c put_page!!!");
-  }
+    if (my_app) {
+      printk("%s", "Executing memory.c put_page!!!");
+    }
 		put_page(page);
-//	}
+	}
 oom:
 	return VM_FAULT_OOM;
 }
@@ -3740,7 +3750,10 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		return VM_FAULT_OOM;
 
-	vmf->cow_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
+  vmf->cow_page = khugepaged_get_or_reserve_page(vma, vmf->address);
+  if (!vmf->cow_page) {
+    vmf->cow_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
+  }
 	if (!vmf->cow_page)
 		return VM_FAULT_OOM;
 

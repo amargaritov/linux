@@ -495,6 +495,7 @@ struct mm_struct {
 		struct hmm *hmm;
 #endif
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	spinlock_t res_hash_lock;
 	struct thp_resvs *thp_reservations;
 #endif
 	} __randomize_layout;
