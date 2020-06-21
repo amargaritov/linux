@@ -38,6 +38,8 @@
  * Aug/Sep 2004 Changed to four level page tables (Andi Kleen)
  */
 
+#include <linux/mem_reservations.h>
+
 #include <linux/kernel_stat.h>
 #include <linux/mm.h>
 #include <linux/sched/mm.h>
@@ -3169,7 +3171,14 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	/* Allocate our own private page. */
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
-	page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+  if (GET_RM_ROOT(vma)) {
+    page = rm_alloc_from_reservation(vma, vmf->address);
+  } else {
+    page = NULL;
+  }
+  if (!page) {
+    page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+  }
 	if (!page)
 		goto oom;
 

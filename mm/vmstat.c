@@ -1162,6 +1162,7 @@ const char * const vmstat_text[] = {
 	"nr_dirtied",
 	"nr_written",
 	"", /* nr_indirectly_reclaimable */
+  "nr_mem_reservations_reserved",
 
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
@@ -1291,6 +1292,8 @@ const char * const vmstat_text[] = {
 	"swap_ra",
 	"swap_ra_hit",
 #endif
+  "nr_mem_reservations_alloc",
+  "nr_mem_reservations_alloc_failed",
 #endif /* CONFIG_VM_EVENTS_COUNTERS */
 };
 #endif /* CONFIG_PROC_FS || CONFIG_SYSFS || CONFIG_NUMA */

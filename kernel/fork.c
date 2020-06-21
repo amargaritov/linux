@@ -11,6 +11,8 @@
  * management can be a bitch. See 'mm/memory.c': 'copy_page_range()'
  */
 
+#include <linux/mem_reservations.h>
+
 #include <linux/slab.h>
 #include <linux/sched/autogroup.h>
 #include <linux/sched/mm.h>
@@ -633,6 +635,11 @@ void __mmdrop(struct mm_struct *mm)
 	mmu_notifier_mm_destroy(mm);
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
+  if (mm->memory_reservations) {
+    printk("Freeing reservation map");
+    rm_destroy(mm->memory_reservations, 1);
+    mm->memory_reservations = NULL;
+  }
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -924,6 +931,8 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	struct user_namespace *user_ns)
 {
+  bool my_app;
+
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
@@ -966,6 +975,15 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		goto fail_nocontext;
 
 	mm->user_ns = get_user_ns(user_ns);
+
+  my_app = (mm->owner->pid == 5555);
+  if (my_app) {
+    mm->memory_reservations = rm_node_create(); 
+    printk("Creating reservations map with root=%lx", mm->memory_reservations);
+  } else {
+    mm->memory_reservations = NULL;
+  }
+
 	return mm;
 
 fail_nocontext:
